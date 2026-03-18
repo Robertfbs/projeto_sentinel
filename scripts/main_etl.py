@@ -57,10 +57,8 @@ class LinkRule:
 
 
 AUTO_LINK_RULES = [
-    LinkRule("chave_explicita_comum", ("chave_explicita_vinculo",), 1.00, False),
-    LinkRule("matricula_numero_os", ("matricula", "numero_os"), 0.97, True),
     LinkRule("matricula_protocolo", ("matricula", "protocolo_referencia"), 0.95, True),
-    LinkRule("matricula_assunto", ("matricula", "assunto_normalizado"), 0.85, True),
+    LinkRule("titulo_normalizado", ("matricula", "assunto_normalizado"), 0.85, True),
 ]
 
 
@@ -375,15 +373,16 @@ def build_relationship_record(
     criterio_vinculo: str | None = None,
     confianca_vinculo: float | None = None,
     ticket_notificacao_id: int | None = None,
-    data_entrada_reclamacao: pd.Timestamp | None = None,
+    data_criacao_notificacao: pd.Timestamp | None = None,
     quantidade_candidatos: int = 0,
     observacao: str | None = None,
 ) -> dict:
     data_criacao_solicitacao = solicitacao.get("data_criacao")
+    data_entrada_reclamacao = data_criacao_solicitacao
 
     dias_defasagem = None
-    if pd.notna(data_entrada_reclamacao) and pd.notna(data_criacao_solicitacao):
-        dias_defasagem = int((data_criacao_solicitacao.normalize() - data_entrada_reclamacao.normalize()).days)
+    if pd.notna(data_criacao_notificacao) and pd.notna(data_criacao_solicitacao):
+        dias_defasagem = int((data_criacao_solicitacao.normalize() - data_criacao_notificacao.normalize()).days)
 
     return {
         "ticket_solicitacao_id": int(solicitacao["ticket_id"]),
@@ -393,6 +392,7 @@ def build_relationship_record(
         "confianca_vinculo": confianca_vinculo,
         "data_entrada_reclamacao": data_entrada_reclamacao,
         "data_criacao_solicitacao": data_criacao_solicitacao,
+        "data_criacao_notificacao": data_criacao_notificacao,
         "dias_defasagem_abertura": dias_defasagem,
         "quantidade_candidatos": quantidade_candidatos,
         "observacao": observacao,
@@ -447,7 +447,7 @@ def build_ticket_relationships(
                         criterio_vinculo="manual",
                         confianca_vinculo=1.0,
                         ticket_notificacao_id=notification_id,
-                        data_entrada_reclamacao=notification["data_criacao"],
+                        data_criacao_notificacao=notification["data_criacao"],
                         quantidade_candidatos=1,
                         observacao=manual_row.get("justificativa"),
                     )
@@ -500,7 +500,7 @@ def build_ticket_relationships(
                     criterio_vinculo=rule.name,
                     confianca_vinculo=rule.confidence,
                     ticket_notificacao_id=notification_id,
-                    data_entrada_reclamacao=notification["data_criacao"],
+                    data_criacao_notificacao=notification["data_criacao"],
                     quantidade_candidatos=1,
                     observacao=None,
                 )
@@ -654,6 +654,7 @@ def process_and_load() -> None:
                 "confianca_vinculo",
                 "data_entrada_reclamacao",
                 "data_criacao_solicitacao",
+                "data_criacao_notificacao",
                 "dias_defasagem_abertura",
                 "quantidade_candidatos",
                 "observacao",
@@ -661,7 +662,7 @@ def process_and_load() -> None:
             df_relacionamentos_db = relationships_df[relacionamento_cols].copy()
             df_relacionamentos_db = prepare_for_sqlite(
                 df_relacionamentos_db,
-                ["data_entrada_reclamacao", "data_criacao_solicitacao"],
+                ["data_entrada_reclamacao", "data_criacao_solicitacao", "data_criacao_notificacao"],
             )
 
             df_tickets = df_solicitacao.copy()
@@ -672,6 +673,7 @@ def process_and_load() -> None:
                         "ticket_notificacao_id",
                         "data_entrada_reclamacao",
                         "data_criacao_solicitacao",
+                        "data_criacao_notificacao",
                         "dias_defasagem_abertura",
                         "criterio_vinculo",
                         "confianca_vinculo",
@@ -714,6 +716,7 @@ def process_and_load() -> None:
                 "ticket_notificacao_id",
                 "data_entrada_reclamacao",
                 "data_criacao_solicitacao",
+                "data_criacao_notificacao",
                 "dias_defasagem_abertura",
                 "criterio_vinculo",
                 "confianca_vinculo",
@@ -727,6 +730,7 @@ def process_and_load() -> None:
                     "data_resolucao",
                     "data_entrada_reclamacao",
                     "data_criacao_solicitacao",
+                    "data_criacao_notificacao",
                 ],
             )
             upsert_sqlite(df_tickets_db, "tickets", "ticket_id", conn)

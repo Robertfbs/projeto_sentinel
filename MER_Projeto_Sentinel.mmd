@@ -1,0 +1,106 @@
+%% Projeto Sentinel
+%% Formato Mermaid compativel com import no Draw.io
+%% Draw.io > Arrange > Insert > Advanced > Mermaid
+
+erDiagram
+    CLIENTES {
+        TEXT matricula PK
+    }
+
+    CASES {
+        TEXT case_id PK
+        TEXT protocolo_agenersa
+    }
+
+    TICKETS {
+        INTEGER ticket_id PK
+        TEXT case_id FK
+        TEXT matricula FK
+        TEXT numero_os
+        DATETIME data_criacao
+        DATETIME data_resolucao
+        TEXT status
+        TEXT atribuido
+        TEXT titulo
+        TEXT assunto
+        TEXT tipo_conversa
+        TEXT tipo_solicitacao
+        TEXT tipo_manifestacao
+        TEXT resultado_tratativa
+        TEXT protocolo_procon
+        TEXT protocolo_defensoria
+        TEXT protocolo_codecon
+        TEXT case_jec
+        INTEGER ticket_solicitacao_id
+        INTEGER ticket_notificacao_id
+        DATETIME data_entrada_reclamacao
+        DATETIME data_criacao_solicitacao
+        INTEGER dias_defasagem_abertura
+        TEXT criterio_vinculo
+        REAL confianca_vinculo
+        TEXT status_vinculo
+    }
+
+    TICKETS_NOTIFICACAO {
+        INTEGER ticket_id PK
+        TEXT case_id
+        TEXT matricula
+        TEXT numero_os
+        DATETIME data_criacao
+        DATETIME data_resolucao
+        TEXT status
+        TEXT atribuido
+        TEXT titulo
+        TEXT assunto
+        TEXT tipo_conversa
+        TEXT tipo_solicitacao
+        TEXT tipo_manifestacao
+        TEXT resultado_tratativa
+        TEXT protocolo_procon
+        TEXT protocolo_defensoria
+        TEXT protocolo_codecon
+        TEXT case_jec
+        TEXT arquivo_origem
+        DATETIME data_carga
+    }
+
+    TICKET_RELACIONAMENTOS {
+        INTEGER ticket_solicitacao_id PK
+        INTEGER ticket_notificacao_id
+        TEXT status_vinculo
+        TEXT criterio_vinculo
+        REAL confianca_vinculo
+        DATETIME data_entrada_reclamacao
+        DATETIME data_criacao_solicitacao
+        INTEGER dias_defasagem_abertura
+        INTEGER quantidade_candidatos
+        TEXT observacao
+        DATETIME atualizado_em
+    }
+
+    TICKET_VINCULOS_MANUAIS {
+        INTEGER ticket_solicitacao_id PK
+        INTEGER ticket_notificacao_id
+        TEXT justificativa
+        TEXT usuario
+        DATETIME atualizado_em
+    }
+
+    AUDIENCIAS {
+        INTEGER audiencia_id PK
+        INTEGER ticket_id UK
+        TEXT audiencia
+        DATETIME data_audiencia
+        TEXT preposto
+        TEXT local_procon
+        TEXT tipo_audiencia
+        DATETIME data_reagendamento
+    }
+
+    CLIENTES ||--o{ TICKETS : possui
+    CASES ||--o{ TICKETS : agrupa
+    TICKETS ||--o| AUDIENCIAS : pode_ter
+    TICKETS ||--o| TICKET_RELACIONAMENTOS : origina_solicitacao
+    TICKETS_NOTIFICACAO ||--o{ TICKET_RELACIONAMENTOS : vincula_notificacao
+    TICKETS ||--o| TICKET_VINCULOS_MANUAIS : permite_override
+    TICKETS_NOTIFICACAO ||--o{ TICKET_VINCULOS_MANUAIS : referencia_notificacao
