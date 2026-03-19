@@ -50,6 +50,9 @@ def setup_database() -> None:
         tipo_solicitacao TEXT,
         tipo_manifestacao TEXT,
         resultado_tratativa TEXT,
+        formulario_ticket TEXT,
+        classificacao_notificacoes TEXT,
+        flag_arquivado_relatorio INTEGER,
         protocolo_procon TEXT,
         protocolo_defensoria TEXT,
         protocolo_codecon TEXT,
@@ -82,6 +85,9 @@ def setup_database() -> None:
         tipo_solicitacao TEXT,
         tipo_manifestacao TEXT,
         resultado_tratativa TEXT,
+        formulario_ticket TEXT,
+        classificacao_notificacoes TEXT,
+        flag_arquivado_relatorio INTEGER,
         protocolo_procon TEXT,
         protocolo_defensoria TEXT,
         protocolo_codecon TEXT,
@@ -144,6 +150,9 @@ def setup_database() -> None:
         "protocolo_defensoria TEXT",
         "protocolo_codecon TEXT",
         "case_jec TEXT",
+        "formulario_ticket TEXT",
+        "classificacao_notificacoes TEXT",
+        "flag_arquivado_relatorio INTEGER",
         "ticket_solicitacao_id INTEGER",
         "ticket_notificacao_id INTEGER",
         "data_entrada_reclamacao DATETIME",
@@ -155,11 +164,19 @@ def setup_database() -> None:
         "status_vinculo TEXT",
     ]
 
+    tickets_notificacao_columns = [
+        "formulario_ticket TEXT",
+        "classificacao_notificacoes TEXT",
+        "flag_arquivado_relatorio INTEGER",
+    ]
+
     try:
         cursor.executescript(sql_script)
 
         for column_sql in ticket_columns:
             _add_column_if_missing(cursor, "tickets", column_sql)
+        for column_sql in tickets_notificacao_columns:
+            _add_column_if_missing(cursor, "tickets_notificacao", column_sql)
 
         conn.commit()
         logging.info("Banco de dados inicializado/atualizado com sucesso em: %s", DB_PATH)

@@ -147,6 +147,7 @@ def extract_zendesk_reports(ticket_kind: str) -> pd.DataFrame:
         arquivos.extend(glob.glob(os.path.join(str(PASTA_RAW), pattern)))
 
     arquivos = sorted(set(arquivos))
+    arquivos = sorted(set(arquivos), key=lambda arquivo: Path(arquivo).stat().st_mtime)
     if config["exclude_terms"]:
         arquivos = [
             arquivo for arquivo in arquivos
@@ -161,6 +162,7 @@ def extract_zendesk_reports(ticket_kind: str) -> pd.DataFrame:
     for arquivo in arquivos:
         df = pd.read_excel(arquivo)
         df["arquivo_origem"] = Path(arquivo).name
+        df["arquivo_mtime"] = Path(arquivo).stat().st_mtime
         dfs.append(df)
 
     df_final = pd.concat(dfs, ignore_index=True)
@@ -192,6 +194,8 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "status_do_ticket": "status",
         "matricula": "matricula",
         "tipo_de_manifestacao": "tipo_manifestacao",
+        "formulario_de_ticket": "formulario_ticket",
+        "classificacao_notificacoes": "classificacao_notificacoes",
         "numero_da_os": "numero_os",
         "resultado_tratativa_segundo_nivel": "resultado_tratativa",
         "audiencia": "audiencia",
@@ -224,6 +228,8 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "tipo_manifestacao",
         "numero_os",
         "resultado_tratativa",
+        "formulario_ticket",
+        "classificacao_notificacoes",
         "audiencia",
         "tipo_audiencia",
         "data_audiencia",
@@ -231,6 +237,7 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "local_procon",
         "data_reagendamento",
         "arquivo_origem",
+        "arquivo_mtime",
     ]
     for column in required_columns:
         if column not in df.columns:
@@ -244,16 +251,43 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
     df["tipo_ticket_zendesk"] = ticket_kind.upper()
     df["chave_explicita_vinculo"] = build_explicit_link_key(df)
 
+    if "formulario_ticket" in df.columns:
+        df["formulario_ticket"] = df["formulario_ticket"].astype("string").str.strip()
+        formulario_norm = df["formulario_ticket"].apply(normalize_text)
+        if formulario_norm.notna().any():
+            prefixo_esperado = "SOLICIT" if ticket_kind == "solicitacao" else "NOTIFIC"
+            tamanho_original = len(df)
+            df = df[
+                formulario_norm.isna()
+                | formulario_norm.str.startswith(prefixo_esperado, na=False)
+            ].copy()
+            logging.info(
+                "Removidos %s tickets de formulario divergente em %s.",
+                tamanho_original - len(df),
+                ticket_kind.upper(),
+            )
+
     for column in ["data_criacao", "data_resolucao", "data_audiencia", "data_reagendamento"]:
         df[column] = pd.to_datetime(df[column], errors="coerce")
 
     df["matricula"] = df["matricula"].apply(normalize_identifier)
     df["numero_os"] = df["numero_os"].apply(normalize_identifier)
 
-    if "tipo_manifestacao" in df.columns:
-        tamanho_original = len(df)
-        df = df[df["tipo_manifestacao"].astype(str).str.upper() != "ANEXO"].copy()
-        logging.info("Removidos %s tickets do tipo ANEXO em %s.", tamanho_original - len(df), ticket_kind.upper())
+    tipo_manifestacao_norm = df["tipo_manifestacao"].apply(normalize_text) if "tipo_manifestacao" in df.columns else pd.Series([None] * len(df), index=df.index)
+    classificacao_notificacoes_norm = (
+        df["classificacao_notificacoes"].apply(normalize_text)
+        if "classificacao_notificacoes" in df.columns
+        else pd.Series([None] * len(df), index=df.index)
+    )
+    df["flag_arquivado_relatorio"] = (
+        (tipo_manifestacao_norm == "ANEXO")
+        | (classificacao_notificacoes_norm == "INFORMATIVO > ANEXO")
+    ).astype(int)
+    logging.info(
+        "Marcados %s tickets para arquivamento logico em %s.",
+        int(df["flag_arquivado_relatorio"].sum()),
+        ticket_kind.upper(),
+    )
 
     if "titulo" in df.columns:
         df["protocolo_agenersa"] = df["titulo"].apply(
@@ -553,6 +587,20 @@ def process_and_load() -> None:
     df_notificacao = transform_data(df_raw_notificacao, "notificacao")
 
     if not df_solicitacao.empty:
+        df_solicitacao = (
+            df_solicitacao.sort_values(["arquivo_mtime", "ticket_id"], kind="stable")
+            .drop_duplicates(subset=["ticket_id"], keep="last")
+            .copy()
+        )
+
+    if not df_notificacao.empty:
+        df_notificacao = (
+            df_notificacao.sort_values(["arquivo_mtime", "ticket_id"], kind="stable")
+            .drop_duplicates(subset=["ticket_id"], keep="last")
+            .copy()
+        )
+
+    if not df_solicitacao.empty:
         caminho_silver_solicitacao = PASTA_SILVER / f"{PREFIXO_ARQUIVO}_processed.xlsx"
         df_solicitacao.to_excel(caminho_silver_solicitacao, index=False)
         logging.info("Arquivo Silver de solicitacao salvo: %s", caminho_silver_solicitacao.name)
@@ -613,6 +661,9 @@ def process_and_load() -> None:
                 "tipo_solicitacao",
                 "tipo_manifestacao",
                 "resultado_tratativa",
+                "formulario_ticket",
+                "classificacao_notificacoes",
+                "flag_arquivado_relatorio",
                 "protocolo_procon",
                 "protocolo_defensoria",
                 "protocolo_codecon",
@@ -620,7 +671,7 @@ def process_and_load() -> None:
                 "arquivo_origem",
             ]
             df_notificacao_db = prepare_for_sqlite(
-                df_notificacao[cols_notificacao].drop_duplicates(subset=["ticket_id"]),
+                df_notificacao[cols_notificacao].drop_duplicates(subset=["ticket_id"], keep="last"),
                 ["data_criacao", "data_resolucao"],
             )
             upsert_sqlite(df_notificacao_db, "tickets_notificacao", "ticket_id", conn)
@@ -708,6 +759,9 @@ def process_and_load() -> None:
                 "tipo_solicitacao",
                 "tipo_manifestacao",
                 "resultado_tratativa",
+                "formulario_ticket",
+                "classificacao_notificacoes",
+                "flag_arquivado_relatorio",
                 "protocolo_procon",
                 "protocolo_defensoria",
                 "protocolo_codecon",
@@ -724,7 +778,7 @@ def process_and_load() -> None:
             ]
 
             df_tickets_db = prepare_for_sqlite(
-                df_tickets[cols_tickets].drop_duplicates(subset=["ticket_id"]),
+                df_tickets[cols_tickets].drop_duplicates(subset=["ticket_id"], keep="last"),
                 [
                     "data_criacao",
                     "data_resolucao",
