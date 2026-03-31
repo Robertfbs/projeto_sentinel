@@ -1,7 +1,5 @@
-import glob
 import hashlib
 import logging
-import os
 import re
 import sqlite3
 import unicodedata
@@ -11,7 +9,10 @@ from pathlib import Path
 import pandas as pd
 
 from create_database import setup_database
+from gss_matching import enrich_tickets_with_gss, transform_gss_data
 from load_database import upsert_sqlite
+from pipeline_common import deduplicate_latest, derive_bloco
+from pipeline_sources import extract_source_reports
 
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -22,18 +23,16 @@ PASTA_RAW = BASE_DIR / "01_raw"
 PASTA_SILVER = BASE_DIR / "02_silver"
 DB_PATH = BASE_DIR / "03_database" / "pre_contencioso.db"
 
-PREFIXO_ARQUIVO = "ANALYTICS_BASE_TICKETS"
 JANELA_MAXIMA_VINCULO_DIAS = 7
 
-RELATORIOS = {
-    "solicitacao": {
-        "include": [f"{PREFIXO_ARQUIVO}*.xlsx"],
-        "exclude_terms": ["NOTIFICACAO"],
-    },
-    "notificacao": {
-        "include": [f"{PREFIXO_ARQUIVO}*NOTIFICACAO*.xlsx", "*NOTIFICACAO*.xlsx"],
-        "exclude_terms": [],
-    },
+SILVER_FILES = {
+    "solicitacao": "ANALYTICS_BASE_TICKETS_GERAL_SOLICITACAO_processed.xlsx",
+    "notificacao": "ANALYTICS_BASE_TICKETS_GERAL_NOTIFICACAO_processed.xlsx",
+    "n1": "ANALYTICS_BASE_TICKETS_N1_processed.xlsx",
+    "audiencias": "PRE_CONTENCIOSO_AUDIENCIAS_processed.xlsx",
+    "gss": "Base_GSS_processed.xlsx",
+    "ticket_assunto": "ANALYTICS_BASE_TICKETS_ASSUNTOS_processed.xlsx",
+    "vinculos": "ANALYTICS_BASE_TICKETS_VINCULOS_processed.xlsx",
 }
 
 EXPLICIT_LINK_KEY_CANDIDATES = [
@@ -140,39 +139,12 @@ def build_explicit_link_key(df: pd.DataFrame) -> pd.Series:
 
 
 def extract_zendesk_reports(ticket_kind: str) -> pd.DataFrame:
-    config = RELATORIOS[ticket_kind]
-    arquivos: list[str] = []
-
-    for pattern in config["include"]:
-        arquivos.extend(glob.glob(os.path.join(str(PASTA_RAW), pattern)))
-
-    arquivos = sorted(set(arquivos))
-    arquivos = sorted(set(arquivos), key=lambda arquivo: Path(arquivo).stat().st_mtime)
-    if config["exclude_terms"]:
-        arquivos = [
-            arquivo for arquivo in arquivos
-            if not any(term.upper() in Path(arquivo).name.upper() for term in config["exclude_terms"])
-        ]
-
-    if not arquivos:
-        logging.warning("Nenhum arquivo encontrado para o relatorio de %s.", ticket_kind.upper())
-        return pd.DataFrame()
-
-    dfs = []
-    for arquivo in arquivos:
-        df = pd.read_excel(arquivo)
-        df["arquivo_origem"] = Path(arquivo).name
-        df["arquivo_mtime"] = Path(arquivo).stat().st_mtime
-        dfs.append(df)
-
-    df_final = pd.concat(dfs, ignore_index=True)
-    logging.info(
-        "Extracao concluida para %s: %s linhas lidas em %s arquivo(s).",
-        ticket_kind.upper(),
-        len(df_final),
-        len(arquivos),
+    logging.warning(
+        "extract_zendesk_reports(%s) foi mantida apenas por compatibilidade. "
+        "O pipeline atual usa o relatorio GERAL via descoberta dinamica por prefixo.",
+        ticket_kind,
     )
-    return df_final
+    return extract_source_reports(PASTA_RAW, "zendesk_geral")
 
 
 def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
@@ -196,6 +168,7 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "tipo_de_manifestacao": "tipo_manifestacao",
         "formulario_de_ticket": "formulario_ticket",
         "classificacao_notificacoes": "classificacao_notificacoes",
+        "classificacao_solicitacoes": "classificacao_solicitacoes",
         "numero_da_os": "numero_os",
         "resultado_tratativa_segundo_nivel": "resultado_tratativa",
         "audiencia": "audiencia",
@@ -204,6 +177,18 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "preposto_name": "preposto",
         "local_do_procon": "local_procon",
         "data_de_reagendamento_carimbo_de_data_hora": "data_reagendamento",
+        "tags_de_ticket": "tags_ticket",
+        "grupo_de_tickets": "grupo_tickets",
+        "superintendencia_adr": "superintendencia_adr",
+        "canal_de_origem": "canal_origem",
+        "cpf_cliente": "cpf_cliente",
+        "passou_pelo_nivel_1": "passou_nivel_1",
+        "canais_de_atrito": "canais_de_atrito",
+        "protocolo_de_referencia": "protocolo_referencia_informado",
+        "motivo_de_espera": "motivo_espera",
+        "prioridade_do_ticket": "prioridade_ticket",
+        "controle_interno": "controle_interno",
+        "concessionaria": "concessionaria",
         "tickets": "contagem_zendesk",
     }
 
@@ -225,9 +210,23 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "tipo_solicitacao",
         "status",
         "matricula",
+        "bloco",
         "tipo_manifestacao",
         "numero_os",
         "resultado_tratativa",
+        "tags_ticket",
+        "grupo_tickets",
+        "superintendencia_adr",
+        "canal_origem",
+        "cpf_cliente",
+        "passou_nivel_1",
+        "canais_de_atrito",
+        "protocolo_referencia_informado",
+        "motivo_espera",
+        "prioridade_ticket",
+        "controle_interno",
+        "concessionaria",
+        "classificacao_solicitacoes",
         "formulario_ticket",
         "classificacao_notificacoes",
         "audiencia",
@@ -271,7 +270,19 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         df[column] = pd.to_datetime(df[column], errors="coerce")
 
     df["matricula"] = df["matricula"].apply(normalize_identifier)
+    df["bloco"] = df["matricula"].apply(derive_bloco)
     df["numero_os"] = df["numero_os"].apply(normalize_identifier)
+    df["cpf_cliente"] = df["cpf_cliente"].apply(normalize_identifier)
+    df["protocolo_referencia_informado"] = (
+        df["protocolo_referencia_informado"]
+        .astype("string")
+        .str.strip()
+        .replace({"": pd.NA, "<NA>": pd.NA, "nan": pd.NA, "None": pd.NA})
+    )
+    df["tipo_solicitacao"] = df.apply(
+        lambda row: first_not_null(row, ["tipo_solicitacao", "classificacao_solicitacoes", "canais_de_atrito"]),
+        axis=1,
+    )
 
     tipo_manifestacao_norm = df["tipo_manifestacao"].apply(normalize_text) if "tipo_manifestacao" in df.columns else pd.Series([None] * len(df), index=df.index)
     classificacao_notificacoes_norm = (
@@ -281,7 +292,10 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
     )
     df["flag_arquivado_relatorio"] = (
         (tipo_manifestacao_norm == "ANEXO")
-        | (classificacao_notificacoes_norm == "INFORMATIVO > ANEXO")
+        | (
+            classificacao_notificacoes_norm.fillna("").str.contains("INFORMATIVO", na=False)
+            & classificacao_notificacoes_norm.fillna("").str.contains("ANEXO", na=False)
+        )
     ).astype(int)
     logging.info(
         "Marcados %s tickets para arquivamento logico em %s.",
@@ -341,6 +355,7 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         lambda row: first_not_null(
             row,
             [
+                "protocolo_referencia_informado",
                 "protocolo_agenersa",
                 "protocolo_procon",
                 "protocolo_defensoria",
@@ -352,6 +367,229 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
     )
 
     return df
+
+
+def transform_n1_data(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    frame = df.copy()
+    frame.columns = [str(column).strip() for column in frame.columns]
+
+    mapa_colunas_normalizado = {
+        "id_do_ticket": "ticket_id",
+        "criacao_do_ticket_carimbo_de_data_hora": "data_criacao",
+        "resolucao_do_ticket_carimbo_de_data_hora": "data_resolucao",
+        "status_do_ticket": "status",
+        "matricula": "matricula",
+        "assunto_do_ticket": "titulo",
+        "assuntos_do_ticket": "assunto",
+        "grupo_de_tickets": "grupo_tickets",
+        "canal_do_ticket": "canal_ticket",
+        "canal_de_origem": "canal_origem",
+        "formulario_de_ticket": "formulario_ticket",
+        "tipo_do_ticket": "tipo_ticket",
+        "sistema_conversationid": "conversation_id",
+        "tipos_de_conversas": "tipo_conversa",
+        "tickets": "contagem_zendesk",
+    }
+
+    rename_map = {
+        column: mapa_colunas_normalizado[normalize_column_name(column)]
+        for column in frame.columns
+        if normalize_column_name(column) in mapa_colunas_normalizado
+    }
+    frame = frame.rename(columns=rename_map)
+
+    required_columns = [
+        "ticket_id",
+        "matricula",
+        "bloco",
+        "data_criacao",
+        "data_resolucao",
+        "status",
+        "titulo",
+        "assunto",
+        "grupo_tickets",
+        "canal_ticket",
+        "canal_origem",
+        "formulario_ticket",
+        "tipo_ticket",
+        "conversation_id",
+        "tipo_conversa",
+        "arquivo_origem",
+        "arquivo_mtime",
+    ]
+    for column in required_columns:
+        if column not in frame.columns:
+            frame[column] = None
+
+    frame = frame.dropna(subset=["ticket_id"]).copy()
+    frame["ticket_id"] = pd.to_numeric(frame["ticket_id"], errors="coerce")
+    frame = frame.dropna(subset=["ticket_id"]).copy()
+    frame["ticket_id"] = frame["ticket_id"].astype(int)
+    frame["matricula"] = frame["matricula"].apply(normalize_identifier)
+    frame["bloco"] = frame["matricula"].apply(derive_bloco)
+    frame["data_criacao"] = pd.to_datetime(frame["data_criacao"], errors="coerce")
+    frame["data_resolucao"] = pd.to_datetime(frame["data_resolucao"], errors="coerce")
+    return frame
+
+
+def transform_audiencias_data(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    frame = df.copy()
+    frame.columns = [str(column).strip() for column in frame.columns]
+
+    mapa_colunas_normalizado = {
+        "id_do_ticket": "ticket_audiencia_id",
+        "ticket_relacionado_id": "ticket_relacionado_id",
+        "data_da_audiencia_carimbo_de_data_hora": "data_audiencia",
+        "data_de_reagendamento_carimbo_de_data_hora": "data_reagendamento",
+        "tipo_de_audiencia": "tipo_audiencia",
+        "status_do_ticket": "status_ticket",
+        "preposto_id": "preposto_id",
+        "preposto_name": "preposto",
+        "nome_do_atribuido": "atribuido",
+        "tickets": "contagem_zendesk",
+    }
+
+    rename_map = {
+        column: mapa_colunas_normalizado[normalize_column_name(column)]
+        for column in frame.columns
+        if normalize_column_name(column) in mapa_colunas_normalizado
+    }
+    frame = frame.rename(columns=rename_map)
+
+    required_columns = [
+        "ticket_audiencia_id",
+        "ticket_relacionado_id",
+        "data_audiencia",
+        "data_reagendamento",
+        "tipo_audiencia",
+        "status_ticket",
+        "preposto_id",
+        "preposto",
+        "atribuido",
+        "arquivo_origem",
+        "arquivo_mtime",
+    ]
+    for column in required_columns:
+        if column not in frame.columns:
+            frame[column] = None
+
+    frame["ticket_audiencia_id"] = pd.to_numeric(frame["ticket_audiencia_id"], errors="coerce").astype("Int64")
+    frame["ticket_relacionado_id"] = pd.to_numeric(frame["ticket_relacionado_id"], errors="coerce").astype("Int64")
+    frame["ticket_id"] = frame["ticket_relacionado_id"].combine_first(frame["ticket_audiencia_id"])
+    frame = frame.dropna(subset=["ticket_id"]).copy()
+    frame["ticket_id"] = frame["ticket_id"].astype(int)
+    frame["data_audiencia"] = pd.to_datetime(frame["data_audiencia"], errors="coerce")
+    frame["data_reagendamento"] = pd.to_datetime(frame["data_reagendamento"], errors="coerce")
+    frame["audiencia"] = "TRUE"
+    frame["local_procon"] = None
+    return frame
+
+
+def build_ticket_assunto(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "ticket_assunto_id",
+                "ticket_id",
+                "formulario_ticket",
+                "assunto_raw",
+                "assunto_normalizado",
+                "ordem_assunto",
+                "flag_assunto_principal",
+                "arquivo_origem",
+            ]
+        )
+
+    frame = df.copy()
+    frame["assunto_raw"] = frame.apply(
+        lambda row: first_not_null(row, ["assunto", "titulo"]),
+        axis=1,
+    )
+    frame["assunto_normalizado_item"] = frame["assunto_raw"].apply(normalize_subject)
+    frame = frame.dropna(subset=["ticket_id", "assunto_normalizado_item"]).copy()
+    if frame.empty:
+        return pd.DataFrame(
+            columns=[
+                "ticket_assunto_id",
+                "ticket_id",
+                "formulario_ticket",
+                "assunto_raw",
+                "assunto_normalizado",
+                "ordem_assunto",
+                "flag_assunto_principal",
+                "arquivo_origem",
+            ]
+        )
+
+    frame = frame.sort_values(["arquivo_mtime", "ticket_id"], kind="stable")
+    frame = frame.drop_duplicates(subset=["ticket_id", "assunto_normalizado_item"], keep="last").copy()
+
+    frame["assunto_principal_ticket"] = frame.groupby("ticket_id")["assunto_normalizado_item"].transform("last")
+    frame["preferencia_principal"] = (
+        frame["assunto_normalizado_item"] == frame["assunto_principal_ticket"]
+    ).astype(int)
+
+    frame = frame.sort_values(
+        ["ticket_id", "preferencia_principal", "arquivo_mtime", "assunto_normalizado_item"],
+        ascending=[True, False, False, True],
+        kind="stable",
+    ).copy()
+    frame["ordem_assunto"] = frame.groupby("ticket_id").cumcount() + 1
+    frame["flag_assunto_principal"] = (frame["ordem_assunto"] == 1).astype(int)
+    frame["ticket_assunto_id"] = frame.apply(
+        lambda row: hashlib.md5(
+            f"{int(row['ticket_id'])}|{row['assunto_normalizado_item']}".encode("utf-8")
+        ).hexdigest(),
+        axis=1,
+    )
+    frame["assunto_normalizado"] = frame["assunto_normalizado_item"]
+
+    return frame[
+        [
+            "ticket_assunto_id",
+            "ticket_id",
+            "formulario_ticket",
+            "assunto_raw",
+            "assunto_normalizado",
+            "ordem_assunto",
+            "flag_assunto_principal",
+            "arquivo_origem",
+        ]
+    ].copy()
+
+
+def build_ticket_assunto_metrics(ticket_assunto_df: pd.DataFrame) -> pd.DataFrame:
+    if ticket_assunto_df.empty:
+        return pd.DataFrame(columns=["ticket_id", "qtde_assuntos_ticket", "flag_multiplos_assuntos"])
+
+    metrics = (
+        ticket_assunto_df.groupby("ticket_id", dropna=False)
+        .size()
+        .reset_index(name="qtde_assuntos_ticket")
+    )
+    metrics["flag_multiplos_assuntos"] = (metrics["qtde_assuntos_ticket"] > 1).astype(int)
+    return metrics
+
+
+def save_silver_output(df: pd.DataFrame, file_name: str) -> None:
+    if df.empty:
+        return
+    output_path = PASTA_SILVER / file_name
+    temp_path = output_path.with_name(f"__tmp__{output_path.stem}.xlsx")
+    if temp_path.exists():
+        temp_path.unlink()
+
+    df.to_excel(temp_path, index=False)
+    if output_path.exists():
+        output_path.unlink()
+    temp_path.replace(output_path)
+    logging.info("Arquivo Silver salvo: %s", output_path.name)
 
 
 def filter_candidates_by_window(
@@ -572,57 +810,100 @@ def prepare_for_sqlite(df: pd.DataFrame, datetime_columns: list[str]) -> pd.Data
     return prepared
 
 
+def backfill_bloco(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    for table_name in ["tickets", "tickets_notificacao", "tickets_n1", "gss_ordens_servico"]:
+        cursor.execute(
+            f"""
+            UPDATE {table_name}
+            SET bloco = CASE
+                WHEN COALESCE(TRIM(matricula), '') LIKE '40%' THEN 'Bloco 4'
+                WHEN COALESCE(TRIM(matricula), '') LIKE '10%' THEN 'Bloco 1'
+                ELSE NULL
+            END
+            WHERE bloco IS NULL OR bloco NOT IN ('Bloco 1', 'Bloco 4')
+            """
+        )
+    conn.commit()
+
+
 def process_and_load() -> None:
     setup_database()
     PASTA_SILVER.mkdir(exist_ok=True)
 
-    df_raw_solicitacao = extract_zendesk_reports("solicitacao")
-    df_raw_notificacao = extract_zendesk_reports("notificacao")
+    df_raw_geral = extract_source_reports(PASTA_RAW, "zendesk_geral")
+    df_raw_n1 = extract_source_reports(PASTA_RAW, "zendesk_n1")
+    df_raw_audiencias = extract_source_reports(PASTA_RAW, "audiencias")
+    df_raw_gss = extract_source_reports(PASTA_RAW, "gss")
 
-    if df_raw_solicitacao.empty and df_raw_notificacao.empty:
+    if df_raw_geral.empty and df_raw_n1.empty and df_raw_audiencias.empty and df_raw_gss.empty:
         logging.warning("Nenhum relatorio encontrado na pasta 01_raw.")
         return
 
-    df_solicitacao = transform_data(df_raw_solicitacao, "solicitacao")
-    df_notificacao = transform_data(df_raw_notificacao, "notificacao")
+    df_solicitacao = transform_data(df_raw_geral, "solicitacao")
+    df_notificacao = transform_data(df_raw_geral, "notificacao")
+    df_n1 = transform_n1_data(df_raw_n1)
+    df_audiencias = transform_audiencias_data(df_raw_audiencias)
+    df_gss = transform_gss_data(df_raw_gss)
+    df_ticket_assunto = build_ticket_assunto(df_solicitacao)
+    df_ticket_assunto_metrics = build_ticket_assunto_metrics(df_ticket_assunto)
 
     if not df_solicitacao.empty:
-        df_solicitacao = (
-            df_solicitacao.sort_values(["arquivo_mtime", "ticket_id"], kind="stable")
-            .drop_duplicates(subset=["ticket_id"], keep="last")
-            .copy()
-        )
+        df_solicitacao = deduplicate_latest(df_solicitacao, subset=["ticket_id"], sort_columns=["arquivo_mtime", "ticket_id"])
 
     if not df_notificacao.empty:
-        df_notificacao = (
-            df_notificacao.sort_values(["arquivo_mtime", "ticket_id"], kind="stable")
-            .drop_duplicates(subset=["ticket_id"], keep="last")
-            .copy()
-        )
+        df_notificacao = deduplicate_latest(df_notificacao, subset=["ticket_id"], sort_columns=["arquivo_mtime", "ticket_id"])
 
-    if not df_solicitacao.empty:
-        caminho_silver_solicitacao = PASTA_SILVER / f"{PREFIXO_ARQUIVO}_processed.xlsx"
-        df_solicitacao.to_excel(caminho_silver_solicitacao, index=False)
-        logging.info("Arquivo Silver de solicitacao salvo: %s", caminho_silver_solicitacao.name)
+    if not df_n1.empty:
+        df_n1 = deduplicate_latest(df_n1, subset=["ticket_id"], sort_columns=["arquivo_mtime", "ticket_id"])
 
-    if not df_notificacao.empty:
-        caminho_silver_notificacao = PASTA_SILVER / f"{PREFIXO_ARQUIVO}_NOTIFICACAO_processed.xlsx"
-        df_notificacao.to_excel(caminho_silver_notificacao, index=False)
-        logging.info("Arquivo Silver de notificacao salvo: %s", caminho_silver_notificacao.name)
+    if not df_audiencias.empty:
+        df_audiencias = deduplicate_latest(df_audiencias, subset=["ticket_id"], sort_columns=["arquivo_mtime", "ticket_id"])
+
+    if not df_gss.empty:
+        df_gss = deduplicate_latest(df_gss, subset=["gss_os_id"], sort_columns=["arquivo_mtime", "gss_os_id"])
 
     with sqlite3.connect(DB_PATH) as conn:
         manual_links_df = load_manual_links(conn)
-        relationships_df = build_ticket_relationships(
-            solicitacoes_df=df_solicitacao,
-            notificacoes_df=df_notificacao,
-            manual_links_df=manual_links_df,
+
+    relationships_df = build_ticket_relationships(
+        solicitacoes_df=df_solicitacao,
+        notificacoes_df=df_notificacao,
+        manual_links_df=manual_links_df,
+    )
+
+    if not df_solicitacao.empty:
+        df_solicitacao = enrich_tickets_with_gss(df_solicitacao, df_gss)
+        if not df_ticket_assunto_metrics.empty:
+            df_solicitacao = df_solicitacao.merge(
+                df_ticket_assunto_metrics,
+                how="left",
+                on="ticket_id",
+            )
+        else:
+            df_solicitacao["qtde_assuntos_ticket"] = 1
+            df_solicitacao["flag_multiplos_assuntos"] = 0
+
+        df_solicitacao["qtde_assuntos_ticket"] = (
+            pd.to_numeric(df_solicitacao["qtde_assuntos_ticket"], errors="coerce")
+            .fillna(1)
+            .astype(int)
+        )
+        df_solicitacao["flag_multiplos_assuntos"] = (
+            pd.to_numeric(df_solicitacao["flag_multiplos_assuntos"], errors="coerce")
+            .fillna(0)
+            .astype(int)
         )
 
-        if not relationships_df.empty:
-            caminho_silver_vinculos = PASTA_SILVER / f"{PREFIXO_ARQUIVO}_VINCULOS_processed.xlsx"
-            relationships_df.to_excel(caminho_silver_vinculos, index=False)
-            logging.info("Arquivo Silver de vinculos salvo: %s", caminho_silver_vinculos.name)
+    save_silver_output(df_solicitacao, SILVER_FILES["solicitacao"])
+    save_silver_output(df_notificacao, SILVER_FILES["notificacao"])
+    save_silver_output(df_n1, SILVER_FILES["n1"])
+    save_silver_output(df_audiencias, SILVER_FILES["audiencias"])
+    save_silver_output(df_gss, SILVER_FILES["gss"])
+    save_silver_output(df_ticket_assunto, SILVER_FILES["ticket_assunto"])
+    save_silver_output(relationships_df, SILVER_FILES["vinculos"])
 
+    with sqlite3.connect(DB_PATH) as conn:
         df_clientes_base = pd.concat(
             [
                 df_solicitacao[["matricula"]] if "matricula" in df_solicitacao.columns else pd.DataFrame(),
@@ -645,11 +926,82 @@ def process_and_load() -> None:
             df_cases = df_cases_base.dropna(subset=["case_id"]).drop_duplicates()
             upsert_sqlite(df_cases, "cases", "case_id", conn)
 
+        if not df_gss.empty:
+            cols_gss = [
+                "gss_os_id",
+                "numero_os",
+                "ano_os",
+                "matricula",
+                "bloco",
+                "data_emissao",
+                "servico_executado",
+                "nome_cliente",
+                "nome_requerente",
+                "telefone",
+                "endereco_requerente",
+                "nome_logradouro",
+                "numero_porta",
+                "complemento",
+                "bairro",
+                "municipio",
+                "data_agendamento",
+                "data_impressao",
+                "previsao_conclusao",
+                "data_execucao",
+                "executor",
+                "entrada_setor",
+                "data_pedido",
+                "atendente",
+                "solicitacao_associada",
+                "tipo_solicitacao_gss",
+                "status_os_gss",
+                "servico_normalizado",
+                "arquivo_origem",
+            ]
+            df_gss_db = prepare_for_sqlite(
+                df_gss[cols_gss].drop_duplicates(subset=["gss_os_id"], keep="last"),
+                [
+                    "data_emissao",
+                    "data_agendamento",
+                    "data_impressao",
+                    "previsao_conclusao",
+                    "data_execucao",
+                    "entrada_setor",
+                ],
+            )
+            upsert_sqlite(df_gss_db, "gss_ordens_servico", "gss_os_id", conn)
+
+        if not df_n1.empty:
+            cols_n1 = [
+                "ticket_id",
+                "matricula",
+                "bloco",
+                "data_criacao",
+                "data_resolucao",
+                "status",
+                "titulo",
+                "assunto",
+                "grupo_tickets",
+                "canal_ticket",
+                "canal_origem",
+                "formulario_ticket",
+                "tipo_ticket",
+                "conversation_id",
+                "tipo_conversa",
+                "arquivo_origem",
+            ]
+            df_n1_db = prepare_for_sqlite(
+                df_n1[cols_n1].drop_duplicates(subset=["ticket_id"], keep="last"),
+                ["data_criacao", "data_resolucao"],
+            )
+            upsert_sqlite(df_n1_db, "tickets_n1", "ticket_id", conn)
+
         if not df_notificacao.empty:
             cols_notificacao = [
                 "ticket_id",
                 "case_id",
                 "matricula",
+                "bloco",
                 "numero_os",
                 "data_criacao",
                 "data_resolucao",
@@ -661,6 +1013,19 @@ def process_and_load() -> None:
                 "tipo_solicitacao",
                 "tipo_manifestacao",
                 "resultado_tratativa",
+                "tags_ticket",
+                "grupo_tickets",
+                "superintendencia_adr",
+                "canal_origem",
+                "cpf_cliente",
+                "passou_nivel_1",
+                "canais_de_atrito",
+                "protocolo_referencia_informado",
+                "motivo_espera",
+                "prioridade_ticket",
+                "controle_interno",
+                "concessionaria",
+                "classificacao_solicitacoes",
                 "formulario_ticket",
                 "classificacao_notificacoes",
                 "flag_arquivado_relatorio",
@@ -676,25 +1041,44 @@ def process_and_load() -> None:
             )
             upsert_sqlite(df_notificacao_db, "tickets_notificacao", "ticket_id", conn)
 
-        if not df_solicitacao.empty and "data_audiencia" in df_solicitacao.columns:
+        if not df_ticket_assunto.empty:
+            cols_ticket_assunto = [
+                "ticket_assunto_id",
+                "ticket_id",
+                "formulario_ticket",
+                "assunto_raw",
+                "assunto_normalizado",
+                "ordem_assunto",
+                "flag_assunto_principal",
+                "arquivo_origem",
+            ]
+            df_ticket_assunto_db = df_ticket_assunto[cols_ticket_assunto].drop_duplicates(
+                subset=["ticket_assunto_id"],
+                keep="last",
+            )
+            upsert_sqlite(df_ticket_assunto_db, "ticket_assunto", "ticket_assunto_id", conn)
+
+        if not df_audiencias.empty:
             cols_aud = [
                 "ticket_id",
+                "ticket_audiencia_id",
+                "ticket_relacionado_id",
                 "audiencia",
                 "data_audiencia",
+                "status_ticket",
+                "preposto_id",
                 "preposto",
                 "local_procon",
                 "tipo_audiencia",
+                "atribuido",
                 "data_reagendamento",
+                "arquivo_origem",
             ]
-            cols_aud_exist = [column for column in cols_aud if column in df_solicitacao.columns]
-            df_audiencias = (
-                df_solicitacao.dropna(subset=["data_audiencia"])[cols_aud_exist]
-                .drop_duplicates(subset=["ticket_id"])
-                .copy()
+            df_audiencias_db = prepare_for_sqlite(
+                df_audiencias[cols_aud].drop_duplicates(subset=["ticket_id"], keep="last"),
+                ["data_audiencia", "data_reagendamento"],
             )
-            if not df_audiencias.empty:
-                df_audiencias = prepare_for_sqlite(df_audiencias, ["data_audiencia", "data_reagendamento"])
-                upsert_sqlite(df_audiencias, "audiencias", "ticket_id", conn)
+            upsert_sqlite(df_audiencias_db, "audiencias", "ticket_id", conn)
 
         if not df_solicitacao.empty:
             relacionamento_cols = [
@@ -710,31 +1094,46 @@ def process_and_load() -> None:
                 "quantidade_candidatos",
                 "observacao",
             ]
-            df_relacionamentos_db = relationships_df[relacionamento_cols].copy()
-            df_relacionamentos_db = prepare_for_sqlite(
-                df_relacionamentos_db,
-                ["data_entrada_reclamacao", "data_criacao_solicitacao", "data_criacao_notificacao"],
-            )
+            if not relationships_df.empty:
+                df_relacionamentos_db = relationships_df[relacionamento_cols].copy()
+                df_relacionamentos_db = prepare_for_sqlite(
+                    df_relacionamentos_db,
+                    ["data_entrada_reclamacao", "data_criacao_solicitacao", "data_criacao_notificacao"],
+                )
+            else:
+                df_relacionamentos_db = pd.DataFrame(columns=relacionamento_cols)
 
             df_tickets = df_solicitacao.copy()
-            df_tickets = df_tickets.merge(
-                relationships_df[
-                    [
-                        "ticket_solicitacao_id",
-                        "ticket_notificacao_id",
-                        "data_entrada_reclamacao",
-                        "data_criacao_solicitacao",
-                        "data_criacao_notificacao",
-                        "dias_defasagem_abertura",
-                        "criterio_vinculo",
-                        "confianca_vinculo",
-                        "status_vinculo",
-                    ]
-                ],
-                how="left",
-                left_on="ticket_id",
-                right_on="ticket_solicitacao_id",
-            )
+            if not relationships_df.empty:
+                df_tickets = df_tickets.merge(
+                    relationships_df[
+                        [
+                            "ticket_solicitacao_id",
+                            "ticket_notificacao_id",
+                            "data_entrada_reclamacao",
+                            "data_criacao_solicitacao",
+                            "data_criacao_notificacao",
+                            "dias_defasagem_abertura",
+                            "criterio_vinculo",
+                            "confianca_vinculo",
+                            "status_vinculo",
+                        ]
+                    ],
+                    how="left",
+                    left_on="ticket_id",
+                    right_on="ticket_solicitacao_id",
+                )
+            else:
+                df_tickets["ticket_solicitacao_id"] = df_tickets["ticket_id"]
+                df_tickets["ticket_notificacao_id"] = None
+                df_tickets["data_entrada_reclamacao"] = df_tickets["data_criacao"]
+                df_tickets["data_criacao_solicitacao"] = df_tickets["data_criacao"]
+                df_tickets["data_criacao_notificacao"] = None
+                df_tickets["dias_defasagem_abertura"] = None
+                df_tickets["criterio_vinculo"] = None
+                df_tickets["confianca_vinculo"] = None
+                df_tickets["status_vinculo"] = "NOTIFICACAO_NAO_CARREGADA"
+
             df_tickets["ticket_solicitacao_id"] = df_tickets["ticket_id"]
 
             if "data_criacao_solicitacao" not in df_tickets or df_tickets["data_criacao_solicitacao"].isna().all():
@@ -748,7 +1147,15 @@ def process_and_load() -> None:
                 "ticket_id",
                 "case_id",
                 "matricula",
+                "bloco",
                 "numero_os",
+                "numero_os_original",
+                "numero_os_gss",
+                "gss_os_id",
+                "origem_numero_os",
+                "status_vinculo_os",
+                "score_vinculo_os",
+                "criterio_vinculo_os",
                 "data_criacao",
                 "data_resolucao",
                 "status",
@@ -759,9 +1166,24 @@ def process_and_load() -> None:
                 "tipo_solicitacao",
                 "tipo_manifestacao",
                 "resultado_tratativa",
+                "tags_ticket",
+                "grupo_tickets",
+                "superintendencia_adr",
+                "canal_origem",
+                "cpf_cliente",
+                "passou_nivel_1",
+                "canais_de_atrito",
+                "protocolo_referencia_informado",
+                "motivo_espera",
+                "prioridade_ticket",
+                "controle_interno",
+                "concessionaria",
+                "classificacao_solicitacoes",
                 "formulario_ticket",
                 "classificacao_notificacoes",
                 "flag_arquivado_relatorio",
+                "qtde_assuntos_ticket",
+                "flag_multiplos_assuntos",
                 "protocolo_procon",
                 "protocolo_defensoria",
                 "protocolo_codecon",
@@ -788,7 +1210,10 @@ def process_and_load() -> None:
                 ],
             )
             upsert_sqlite(df_tickets_db, "tickets", "ticket_id", conn)
-            upsert_sqlite(df_relacionamentos_db, "ticket_relacionamentos", "ticket_solicitacao_id", conn)
+            if not df_relacionamentos_db.empty:
+                upsert_sqlite(df_relacionamentos_db, "ticket_relacionamentos", "ticket_solicitacao_id", conn)
+
+        backfill_bloco(conn)
 
 
 if __name__ == "__main__":
