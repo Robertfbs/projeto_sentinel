@@ -26,14 +26,20 @@ DB_PATH = BASE_DIR / "03_database" / "pre_contencioso.db"
 JANELA_MAXIMA_VINCULO_DIAS = 7
 
 SILVER_FILES = {
-    "solicitacao": "ANALYTICS_BASE_TICKETS_GERAL_SOLICITACAO_processed.xlsx",
-    "notificacao": "ANALYTICS_BASE_TICKETS_GERAL_NOTIFICACAO_processed.xlsx",
+    "geral": "ANALYTICS_BASE_TICKETS_GERAL_processed.xlsx",
     "n1": "ANALYTICS_BASE_TICKETS_N1_processed.xlsx",
     "audiencias": "PRE_CONTENCIOSO_AUDIENCIAS_processed.xlsx",
     "gss": "Base_GSS_processed.xlsx",
     "ticket_assunto": "ANALYTICS_BASE_TICKETS_ASSUNTOS_processed.xlsx",
     "vinculos": "ANALYTICS_BASE_TICKETS_VINCULOS_processed.xlsx",
 }
+
+LEGACY_SILVER_FILES = [
+    "ANALYTICS_BASE_TICKETS_GERAL_SOLICITACAO_processed.xlsx",
+    "ANALYTICS_BASE_TICKETS_GERAL_NOTIFICACAO_processed.xlsx",
+    "ANALYTICS_BASE_TICKETS_processed.xlsx",
+    "ANALYTICS_BASE_TICKETS_NOTIFICACAO_processed.xlsx",
+]
 
 EXPLICIT_LINK_KEY_CANDIDATES = [
     "id_reclamacao",
@@ -592,6 +598,14 @@ def save_silver_output(df: pd.DataFrame, file_name: str) -> None:
     logging.info("Arquivo Silver salvo: %s", output_path.name)
 
 
+def cleanup_legacy_silver_files() -> None:
+    for file_name in LEGACY_SILVER_FILES:
+        legacy_path = PASTA_SILVER / file_name
+        if legacy_path.exists():
+            legacy_path.unlink()
+            logging.info("Arquivo Silver legado removido: %s", legacy_path.name)
+
+
 def filter_candidates_by_window(
     notifications_df: pd.DataFrame,
     solicitacao_data_criacao: pd.Timestamp | None,
@@ -895,13 +909,21 @@ def process_and_load() -> None:
             .astype(int)
         )
 
-    save_silver_output(df_solicitacao, SILVER_FILES["solicitacao"])
-    save_silver_output(df_notificacao, SILVER_FILES["notificacao"])
+    df_geral_silver = pd.concat([df_solicitacao, df_notificacao], ignore_index=True, sort=False)
+    if not df_geral_silver.empty:
+        df_geral_silver = df_geral_silver.sort_values(
+            ["data_criacao", "ticket_id"],
+            kind="stable",
+            na_position="last",
+        ).copy()
+
+    save_silver_output(df_geral_silver, SILVER_FILES["geral"])
     save_silver_output(df_n1, SILVER_FILES["n1"])
     save_silver_output(df_audiencias, SILVER_FILES["audiencias"])
     save_silver_output(df_gss, SILVER_FILES["gss"])
     save_silver_output(df_ticket_assunto, SILVER_FILES["ticket_assunto"])
     save_silver_output(relationships_df, SILVER_FILES["vinculos"])
+    cleanup_legacy_silver_files()
 
     with sqlite3.connect(DB_PATH) as conn:
         df_clientes_base = pd.concat(
