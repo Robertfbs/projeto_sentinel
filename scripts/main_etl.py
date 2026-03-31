@@ -9,7 +9,12 @@ from pathlib import Path
 import pandas as pd
 
 from create_database import setup_database
-from gss_matching import enrich_tickets_with_gss, transform_gss_data
+from gss_matching import (
+    enrich_with_gss,
+    enrich_tickets_with_gss,
+    filter_raw_gss_for_ticket_enrichment,
+    transform_gss_data,
+)
 from load_database import upsert_sqlite
 from pipeline_common import deduplicate_latest, derive_bloco
 from pipeline_sources import extract_source_reports
@@ -29,7 +34,6 @@ SILVER_FILES = {
     "geral": "ANALYTICS_BASE_TICKETS_GERAL_processed.xlsx",
     "n1": "ANALYTICS_BASE_TICKETS_N1_processed.xlsx",
     "audiencias": "PRE_CONTENCIOSO_AUDIENCIAS_processed.xlsx",
-    "gss": "Base_GSS_processed.xlsx",
     "ticket_assunto": "ANALYTICS_BASE_TICKETS_ASSUNTOS_processed.xlsx",
     "vinculos": "ANALYTICS_BASE_TICKETS_VINCULOS_processed.xlsx",
 }
@@ -39,6 +43,7 @@ LEGACY_SILVER_FILES = [
     "ANALYTICS_BASE_TICKETS_GERAL_NOTIFICACAO_processed.xlsx",
     "ANALYTICS_BASE_TICKETS_processed.xlsx",
     "ANALYTICS_BASE_TICKETS_NOTIFICACAO_processed.xlsx",
+    "Base_GSS_processed.xlsx",
 ]
 
 EXPLICIT_LINK_KEY_CANDIDATES = [
@@ -195,6 +200,17 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "prioridade_do_ticket": "prioridade_ticket",
         "controle_interno": "controle_interno",
         "concessionaria": "concessionaria",
+        "bairro": "bairro",
+        "municipio": "municipio",
+        "logradouro": "logradouro",
+        "nome_logradouro": "logradouro",
+        "endereco": "endereco",
+        "endereco_do_requerente": "endereco",
+        "numero_da_porta": "numero_porta",
+        "numero_porta": "numero_porta",
+        "complemento": "complemento",
+        "desc_complemento": "complemento",
+        "telefone": "telefone",
         "tickets": "contagem_zendesk",
     }
 
@@ -232,6 +248,15 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "prioridade_ticket",
         "controle_interno",
         "concessionaria",
+        "bairro",
+        "municipio",
+        "logradouro",
+        "endereco",
+        "numero_porta",
+        "complemento",
+        "telefone",
+        "nome_cliente_gss",
+        "nome_requerente_gss",
         "classificacao_solicitacoes",
         "formulario_ticket",
         "classificacao_notificacoes",
@@ -826,7 +851,7 @@ def prepare_for_sqlite(df: pd.DataFrame, datetime_columns: list[str]) -> pd.Data
 
 def backfill_bloco(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
-    for table_name in ["tickets", "tickets_notificacao", "tickets_n1", "gss_ordens_servico"]:
+    for table_name in ["tickets", "tickets_notificacao", "tickets_n1"]:
         cursor.execute(
             f"""
             UPDATE {table_name}
@@ -858,7 +883,6 @@ def process_and_load() -> None:
     df_notificacao = transform_data(df_raw_geral, "notificacao")
     df_n1 = transform_n1_data(df_raw_n1)
     df_audiencias = transform_audiencias_data(df_raw_audiencias)
-    df_gss = transform_gss_data(df_raw_gss)
     df_ticket_assunto = build_ticket_assunto(df_solicitacao)
     df_ticket_assunto_metrics = build_ticket_assunto_metrics(df_ticket_assunto)
 
@@ -874,6 +898,15 @@ def process_and_load() -> None:
     if not df_audiencias.empty:
         df_audiencias = deduplicate_latest(df_audiencias, subset=["ticket_id"], sort_columns=["arquivo_mtime", "ticket_id"])
 
+    df_tickets_para_gss = pd.concat(
+        [
+            df_solicitacao[["matricula", "numero_os"]] if not df_solicitacao.empty else pd.DataFrame(columns=["matricula", "numero_os"]),
+            df_notificacao[["matricula", "numero_os"]] if not df_notificacao.empty else pd.DataFrame(columns=["matricula", "numero_os"]),
+        ],
+        ignore_index=True,
+    )
+    df_raw_gss_filtrado = filter_raw_gss_for_ticket_enrichment(df_raw_gss, df_tickets_para_gss)
+    df_gss = transform_gss_data(df_raw_gss_filtrado)
     if not df_gss.empty:
         df_gss = deduplicate_latest(df_gss, subset=["gss_os_id"], sort_columns=["arquivo_mtime", "gss_os_id"])
 
@@ -887,6 +920,7 @@ def process_and_load() -> None:
     )
 
     if not df_solicitacao.empty:
+        df_solicitacao = enrich_with_gss(df_solicitacao, df_gss)
         df_solicitacao = enrich_tickets_with_gss(df_solicitacao, df_gss)
         if not df_ticket_assunto_metrics.empty:
             df_solicitacao = df_solicitacao.merge(
@@ -909,6 +943,9 @@ def process_and_load() -> None:
             .astype(int)
         )
 
+    if not df_notificacao.empty:
+        df_notificacao = enrich_with_gss(df_notificacao, df_gss)
+
     df_geral_silver = pd.concat([df_solicitacao, df_notificacao], ignore_index=True, sort=False)
     if not df_geral_silver.empty:
         df_geral_silver = df_geral_silver.sort_values(
@@ -920,7 +957,6 @@ def process_and_load() -> None:
     save_silver_output(df_geral_silver, SILVER_FILES["geral"])
     save_silver_output(df_n1, SILVER_FILES["n1"])
     save_silver_output(df_audiencias, SILVER_FILES["audiencias"])
-    save_silver_output(df_gss, SILVER_FILES["gss"])
     save_silver_output(df_ticket_assunto, SILVER_FILES["ticket_assunto"])
     save_silver_output(relationships_df, SILVER_FILES["vinculos"])
     cleanup_legacy_silver_files()
@@ -947,51 +983,6 @@ def process_and_load() -> None:
         if not df_cases_base.empty:
             df_cases = df_cases_base.dropna(subset=["case_id"]).drop_duplicates()
             upsert_sqlite(df_cases, "cases", "case_id", conn)
-
-        if not df_gss.empty:
-            cols_gss = [
-                "gss_os_id",
-                "numero_os",
-                "ano_os",
-                "matricula",
-                "bloco",
-                "data_emissao",
-                "servico_executado",
-                "nome_cliente",
-                "nome_requerente",
-                "telefone",
-                "endereco_requerente",
-                "nome_logradouro",
-                "numero_porta",
-                "complemento",
-                "bairro",
-                "municipio",
-                "data_agendamento",
-                "data_impressao",
-                "previsao_conclusao",
-                "data_execucao",
-                "executor",
-                "entrada_setor",
-                "data_pedido",
-                "atendente",
-                "solicitacao_associada",
-                "tipo_solicitacao_gss",
-                "status_os_gss",
-                "servico_normalizado",
-                "arquivo_origem",
-            ]
-            df_gss_db = prepare_for_sqlite(
-                df_gss[cols_gss].drop_duplicates(subset=["gss_os_id"], keep="last"),
-                [
-                    "data_emissao",
-                    "data_agendamento",
-                    "data_impressao",
-                    "previsao_conclusao",
-                    "data_execucao",
-                    "entrada_setor",
-                ],
-            )
-            upsert_sqlite(df_gss_db, "gss_ordens_servico", "gss_os_id", conn)
 
         if not df_n1.empty:
             cols_n1 = [
@@ -1048,6 +1039,15 @@ def process_and_load() -> None:
                 "controle_interno",
                 "concessionaria",
                 "classificacao_solicitacoes",
+                "bairro",
+                "municipio",
+                "logradouro",
+                "endereco",
+                "numero_porta",
+                "complemento",
+                "telefone",
+                "nome_cliente_gss",
+                "nome_requerente_gss",
                 "formulario_ticket",
                 "classificacao_notificacoes",
                 "flag_arquivado_relatorio",
@@ -1201,6 +1201,15 @@ def process_and_load() -> None:
                 "controle_interno",
                 "concessionaria",
                 "classificacao_solicitacoes",
+                "bairro",
+                "municipio",
+                "logradouro",
+                "endereco",
+                "numero_porta",
+                "complemento",
+                "telefone",
+                "nome_cliente_gss",
+                "nome_requerente_gss",
                 "formulario_ticket",
                 "classificacao_notificacoes",
                 "flag_arquivado_relatorio",

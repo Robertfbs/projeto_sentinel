@@ -44,6 +44,18 @@ GSS_REQUIRED_COLUMNS = [
     "arquivo_mtime",
 ]
 
+GSS_ENRICHMENT_COLUMN_MAP = {
+    "bairro": "bairro",
+    "municipio": "municipio",
+    "nome_logradouro": "logradouro",
+    "endereco_requerente": "endereco",
+    "numero_porta": "numero_porta",
+    "complemento": "complemento",
+    "telefone": "telefone",
+    "nome_cliente": "nome_cliente_gss",
+    "nome_requerente": "nome_requerente_gss",
+}
+
 
 def _join_text_parts(values: list[object]) -> str:
     return " ".join(
@@ -51,6 +63,111 @@ def _join_text_parts(values: list[object]) -> str:
         for value in values
         if pd.notna(value) and str(value).strip()
     )
+
+
+def filter_raw_gss_for_ticket_enrichment(df_raw_gss: pd.DataFrame, tickets_df: pd.DataFrame) -> pd.DataFrame:
+    if df_raw_gss.empty or tickets_df.empty:
+        return pd.DataFrame()
+
+    frame = df_raw_gss.copy()
+    frame.columns = [str(column).strip() for column in frame.columns]
+    normalized_columns = {normalize_column_name(column): column for column in frame.columns}
+    matricula_column = normalized_columns.get("matricula")
+    if not matricula_column:
+        logging.warning("Coluna de matricula nao encontrada na base GSS. Filtro de enriquecimento nao aplicado.")
+        return frame
+
+    matriculas_alvo = {
+        value
+        for value in tickets_df["matricula"].dropna().astype(str).str.strip().tolist()
+        if value
+    }
+    if not matriculas_alvo:
+        logging.info("Nenhuma matricula encontrada nos tickets para enriquecimento via GSS.")
+        return frame.iloc[0:0].copy()
+
+    frame[matricula_column] = frame[matricula_column].apply(normalize_identifier)
+    filtered = frame[frame[matricula_column].isin(matriculas_alvo)].copy()
+    logging.info(
+        "Base GSS filtrada para enriquecimento: %s -> %s linhas (%s matriculas alvo).",
+        len(df_raw_gss),
+        len(filtered),
+        len(matriculas_alvo),
+    )
+    return filtered
+
+
+def enrich_with_gss(
+    df_tickets: pd.DataFrame,
+    df_gss: pd.DataFrame,
+    column_map: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    if df_tickets.empty:
+        return df_tickets
+
+    enriched = df_tickets.copy()
+    active_column_map = column_map or GSS_ENRICHMENT_COLUMN_MAP
+
+    for target_column in active_column_map.values():
+        if target_column not in enriched.columns:
+            enriched[target_column] = None
+
+    if df_gss.empty:
+        logging.warning("Base GSS nao encontrada na carga atual. Enriquecimento complementar por matricula nao executado.")
+        return enriched
+
+    gss_context = build_gss_context(df_gss, active_column_map)
+    if gss_context.empty:
+        logging.warning("Base GSS sem contexto utilizavel por matricula. Enriquecimento complementar nao executado.")
+        return enriched
+
+    total_updates = 0
+    context_by_matricula = gss_context.set_index("matricula")
+
+    for source_column, target_column in active_column_map.items():
+        lookup = context_by_matricula[source_column]
+        missing_mask = (
+            enriched[target_column].isna()
+            | enriched[target_column].astype("string").str.strip().isin(["", "<NA>", "nan", "None"])
+        )
+        mapped_values = enriched.loc[missing_mask, "matricula"].map(lookup)
+        fill_mask = mapped_values.notna() & mapped_values.astype("string").str.strip().ne("")
+        if fill_mask.any():
+            indices_to_fill = mapped_values.loc[fill_mask].index
+            enriched.loc[indices_to_fill, target_column] = mapped_values.loc[fill_mask]
+            total_updates += int(fill_mask.sum())
+
+    logging.info("Enriquecimento complementar via GSS concluido: %s campos preenchidos.", total_updates)
+    return enriched
+
+
+def build_gss_context(df_gss: pd.DataFrame, column_map: dict[str, str] | None = None) -> pd.DataFrame:
+    if df_gss.empty:
+        return pd.DataFrame(columns=["matricula"])
+
+    active_column_map = column_map or GSS_ENRICHMENT_COLUMN_MAP
+    source_columns = [column for column in active_column_map.keys() if column in df_gss.columns]
+    if not source_columns:
+        return pd.DataFrame(columns=["matricula"])
+
+    context = df_gss.copy()
+    for column in source_columns:
+        context[column] = (
+            context[column]
+            .astype("string")
+            .str.strip()
+            .replace({"": pd.NA, "<NA>": pd.NA, "nan": pd.NA, "None": pd.NA})
+        )
+
+    context["score_contexto"] = context[source_columns].notna().sum(axis=1)
+    context = context.sort_values(
+        ["score_contexto", "data_emissao", "data_execucao", "data_agendamento", "gss_os_id"],
+        ascending=[False, False, False, False, False],
+        kind="stable",
+        na_position="last",
+    ).copy()
+    context = context.drop_duplicates(subset=["matricula"], keep="first").copy()
+    return context[["matricula", *source_columns]]
 
 
 def transform_gss_data(df: pd.DataFrame) -> pd.DataFrame:
