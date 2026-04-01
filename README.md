@@ -1,18 +1,33 @@
 # Projeto Sentinel
 
-Mini Data Warehouse analitico para tratamento de manifestacoes recebidas via Zendesk, com foco em operacao de CX, pre-contencioso e consumo em Power BI.
+Plataforma de dados em Python + SQLite para consolidacao, tratamento, enriquecimento e persistencia analitica de tickets Zendesk relacionados a CX, pre-contencioso e manifestacoes institucionais.
 
-O projeto consolida relatorios operacionais, padroniza dados, extrai protocolos institucionais, relaciona tickets de `NOTIFICACAO` e `SOLICITACAO` e persiste tudo em um banco SQLite pronto para analise.
+O projeto foi estruturado como um mini data warehouse operacional, com foco em rastreabilidade de reclamacoes, preservacao do contexto transacional dos tickets, enriquecimento complementar com dados comerciais e entrega de uma base Gold consumivel por Power BI.
 
-## Objetivo
+## Escopo Atual
 
-Garantir uma base analitica confiavel para medir volume, SLA, aging e evolucao de manifestacoes regulatorias e institucionais, preservando:
+O estado atual do projeto cobre quatro frentes principais:
 
-- a data oficial de entrada da reclamacao a partir da `NOTIFICACAO`
-- os dados analiticos completos da `SOLICITACAO`
-- a rastreabilidade entre os dois tickets da mesma reclamacao
+1. Ingestao dinamica de multiplos arquivos brutos em `01_raw`, identificados por prefixo.
+2. Tratamento e normalizacao de dados Zendesk N2, Zendesk N1, audiencias e GSS.
+3. Persistencia relacional em SQLite com UPSERT incremental.
+4. Camada analitica auxiliar em Python para geracao de relatorios executivos em Excel.
 
-## Stack
+O desenho privilegia alteracoes aditivas, baixo acoplamento, reprocessamento seguro e compatibilidade com o consumo atual em BI.
+
+## Objetivo do Banco Analitico
+
+O banco `03_database/pre_contencioso.db` foi desenhado para responder, com rastreabilidade, perguntas operacionais e estrategicas como:
+
+- volume real de tickets por periodo e por canal;
+- evolucao de manifestacoes institucionais;
+- relacao entre `NOTIFICACAO` e `SOLICITACAO`;
+- produtividade operacional por analista;
+- funil de protocolos institucionais;
+- acompanhamentos com audiencia;
+- enriquecimento territorial e comercial por matricula.
+
+## Stack Tecnico
 
 - Python 3.10+
 - Pandas
@@ -22,30 +37,33 @@ Garantir uma base analitica confiavel para medir volume, SLA, aging e evolucao d
 
 ## Arquitetura
 
-O pipeline segue o padrao `Bronze > Silver > Gold`.
-
-- `01_raw/`: relatorios brutos exportados do Zendesk
-- `02_silver/`: arquivos tratados e enriquecidos
-- `03_database/`: banco SQLite final
-- `scripts/`: motor ETL
-
-Fluxo:
+O pipeline segue o modelo `Bronze -> Silver -> Gold`.
 
 ```text
-Zendesk Export
-   ->
-01_raw
-   ->
-ETL Python
-   ->
-02_silver
-   ->
-SQLite
-   ->
-Power BI / Analytics
+Arquivos manuais (Zendesk / GSS)
+        |
+        v
+01_raw  [Bronze]
+        |
+        v
+main_etl.py
+  - ingestao dinamica
+  - padronizacao
+  - deduplicacao
+  - enriquecimento
+  - vinculacao
+        |
+        v
+02_silver [datasets tratados e auditoria]
+        |
+        v
+03_database/pre_contencioso.db [Gold]
+        |
+        v
+Power BI / Analises / scripts/analytics
 ```
 
-## Estrutura do projeto
+## Estrutura do Projeto
 
 ```text
 Projeto_Sentinel/
@@ -53,156 +71,469 @@ Projeto_Sentinel/
 |-- 02_silver/
 |-- 03_database/
 |   `-- pre_contencioso.db
+|-- outputs/
 |-- scripts/
 |   |-- create_database.py
 |   |-- load_database.py
-|   `-- main_etl.py
-|-- .gitignore
+|   |-- main_etl.py
+|   |-- pipeline_common.py
+|   |-- pipeline_sources.py
+|   |-- gss_matching.py
+|   `-- analytics/
+|       |-- __init__.py
+|       |-- queries.py
+|       `-- relatorio_executivo.py
+|-- MER_Projeto_Sentinel.mmd
 `-- README.md
 ```
 
-## Entradas esperadas
+## Fontes de Dados
 
-O ETL suporta dois tipos de relatorio Zendesk:
+### 1. Zendesk N2 - Relatorio Geral
 
-- `SOLICITACAO`: arquivos com prefixo `ANALYTICS_BASE_TICKETS` e sem `NOTIFICACAO` no nome
-- `NOTIFICACAO`: arquivos com `NOTIFICACAO` no nome, por exemplo `ANALYTICS_BASE_TICKETS_NOTIFICACAO_mar_2026.xlsx`
+Prefixo obrigatorio em `01_raw`:
 
-Os arquivos devem ser salvos em `01_raw/`.
+- `ANALYTICS_BASE_TICKETS_GERAL`
 
-## Como executar
+Esse relatorio contem, na mesma extracao:
 
-### 1. Instalar dependencias
+- tickets de `SOLICITACAO`;
+- tickets de `NOTIFICACAO`;
+- informacoes operacionais completas do N2;
+- o campo `Formulário de ticket`, utilizado para separar logicamente os dois universos.
 
-```bash
-pip install pandas openpyxl xlsxwriter
-```
+Observacao importante:
 
-### 2. Adicionar os arquivos do Zendesk
+- o projeto nao gera mais dois arquivos Silver separados para o N2;
+- o Silver consolidado do geral permanece em um unico arquivo;
+- a separacao entre `SOLICITACAO` e `NOTIFICACAO` ocorre internamente no ETL para fins de carga no banco.
 
-Copie os relatorios para `01_raw/`.
+### 2. Zendesk N1
 
-### 3. Rodar o pipeline
+Prefixo obrigatorio:
 
-```bash
-python scripts/main_etl.py
-```
+- `ANALYTICS_BASE_TICKETS_N1`
 
-## O que o pipeline faz
+O N1 e armazenado separadamente em `tickets_n1`, pois nao compoe a operacao principal do N2. O objetivo atual e arquivamento tecnico e manutencao historica para uso futuro.
 
-### Ingestao
+### 3. Audiencias
 
-- le relatorios separados de `SOLICITACAO` e `NOTIFICACAO`
-- padroniza nomes de colunas, mesmo com variacoes de acentuacao
-- remove tickets do tipo `ANEXO`
+Prefixo obrigatorio:
 
-### Enriquecimento
+- `PRE_CONTENCIOSO_AUDIENCIAS`
 
-Mantem as regras ja existentes:
+Fonte dedicada para:
 
-- extracao de protocolo Agenersa
-- extracao de protocolo PROCON
-- extracao de protocolo Defensoria
-- extracao de protocolo CODECON
-- geracao de `case_jec`
+- data da audiencia;
+- reagendamento;
+- preposto;
+- local;
+- tipo de audiencia;
+- chaves de relacionamento com ticket.
 
-### Relacionamento entre tickets
+### 4. GSS / Base Comercial
 
-O vinculo entre `NOTIFICACAO` e `SOLICITACAO` segue esta prioridade:
+Prefixo obrigatorio:
 
-1. chave explicita comum, se existir no relatorio
-2. `matricula + numero_os`
-3. `matricula + protocolo_referencia`
-4. `matricula + assunto_normalizado`
-5. vinculo manual para casos ambiguos
+- `Base_GSS`
 
-Regras de seguranca:
+Uso atual:
 
-- a `data_criacao` original do ticket nao e sobrescrita
-- a data oficial da reclamacao vai para `data_entrada_reclamacao`
-- o ticket analitico continua sendo a `SOLICITACAO`
-- vinculos ambiguos nao sao forcados automaticamente
+- enriquecimento complementar por `matricula`;
+- apoio ao preenchimento de O.S. ausente;
+- complemento de endereco e contato;
+- suporte analitico auxiliar.
 
-## Modelo de dados
+Uso nao adotado no desenho atual:
 
-### Tabelas principais
+- a base GSS nao e carregada integralmente como Silver operacional;
+- a base GSS nao e mais persistida integralmente como parte ativa do fluxo Gold;
+- o ETL filtra a base bruta apenas para as matriculas relevantes aos tickets da carga.
 
-- `clientes`: dimensao basica por matricula
-- `cases`: agrupamento logico dos tickets
-- `tickets`: fato principal da `SOLICITACAO`
-- `tickets_notificacao`: persistencia e auditoria da `NOTIFICACAO`
-- `ticket_relacionamentos`: resultado do vinculo entre os dois tickets
-- `ticket_vinculos_manuais`: override manual para casos ambiguos
-- `audiencias`: informacoes de audiencia vinculadas ao ticket de solicitacao
+## Descoberta Dinamica de Arquivos
 
-### Campos analiticos de vinculo
+O modulo [pipeline_sources.py](E:/Projeto_Sentinel/scripts/pipeline_sources.py) localiza automaticamente arquivos por prefixo e extensao suportada.
 
-Na tabela `tickets`, os principais campos adicionados para analise sao:
+Configuracao atual:
 
-- `ticket_solicitacao_id`
-- `ticket_notificacao_id`
-- `data_entrada_reclamacao`
-- `data_criacao_solicitacao`
-- `dias_defasagem_abertura`
-- `criterio_vinculo`
-- `confianca_vinculo`
-- `status_vinculo`
+- `ANALYTICS_BASE_TICKETS_GERAL`
+- `ANALYTICS_BASE_TICKETS_N1`
+- `PRE_CONTENCIOSO_AUDIENCIAS`
+- `Base_GSS`
 
-## Regras de persistencia
+Caracteristicas:
 
-- UPSERT por chave primaria
-- `tickets`: UPSERT por `ticket_id`
-- `tickets_notificacao`: UPSERT por `ticket_id`
-- `ticket_relacionamentos`: UPSERT por `ticket_solicitacao_id`
-- `audiencias`: UPSERT por `ticket_id`
+- aceita multiplos arquivos por prefixo;
+- aceita variacoes de sufixo, data e versao no nome;
+- registra `arquivo_origem`, `arquivo_mtime` e `fonte_raw` no momento da leitura;
+- concatena todas as ocorrencias de uma mesma fonte antes da transformacao.
 
-Isso permite reprocessamento sem duplicidade e atualizacao incremental dos dados.
+## Scripts Principais
 
-## Saidas geradas
+### [create_database.py](E:/Projeto_Sentinel/scripts/create_database.py)
 
-Na pasta `02_silver/`, o pipeline pode gerar:
+Responsavel por:
 
-- `ANALYTICS_BASE_TICKETS_processed.xlsx`
-- `ANALYTICS_BASE_TICKETS_NOTIFICACAO_processed.xlsx`
+- criar o banco SQLite caso ainda nao exista;
+- garantir tabelas, indices e colunas incrementais;
+- manter compatibilidade retroativa com esquemas anteriores via `ALTER TABLE` aditivo.
+
+### [load_database.py](E:/Projeto_Sentinel/scripts/load_database.py)
+
+Responsavel por:
+
+- executar UPSERT generico em SQLite;
+- utilizar tabela temporaria via Pandas;
+- atualizar apenas as colunas presentes no dataframe carregado;
+- evitar duplicidade por chave primaria.
+
+### [pipeline_common.py](E:/Projeto_Sentinel/scripts/pipeline_common.py)
+
+Responsavel por utilitarios compartilhados:
+
+- normalizacao de nomes de coluna;
+- normalizacao de texto;
+- padronizacao de identificadores;
+- derivacao da coluna `bloco`;
+- normalizacao de assuntos;
+- selecao de primeiro valor nao nulo;
+- serializacao de datas;
+- garantia de colunas esperadas;
+- deduplicacao `keep last` com ordenacao controlada.
+
+### [pipeline_sources.py](E:/Projeto_Sentinel/scripts/pipeline_sources.py)
+
+Responsavel por:
+
+- localizar os arquivos corretos em `01_raw`;
+- validar prefixos e extensoes;
+- ler Excel para Pandas;
+- concatenar datasets por fonte.
+
+### [gss_matching.py](E:/Projeto_Sentinel/scripts/gss_matching.py)
+
+Responsavel por duas funcoes distintas:
+
+- enriquecimento complementar por `matricula` com dados de endereco e contato;
+- matching de O.S. via regras de score quando `numero_os` estiver ausente no Zendesk.
+
+### [main_etl.py](E:/Projeto_Sentinel/scripts/main_etl.py)
+
+Orquestrador principal do pipeline. Executa a sequencia completa:
+
+1. inicializacao do schema;
+2. leitura das fontes brutas;
+3. transformacao de N2, N1, audiencias e GSS;
+4. construcao da tabela filha `ticket_assunto`;
+5. deduplicacao por `ticket_id`;
+6. enriquecimento complementar com GSS;
+7. matching de O.S. para `SOLICITACAO`;
+8. vinculacao entre `NOTIFICACAO` e `SOLICITACAO`;
+9. geracao dos arquivos Silver;
+10. UPSERT nas tabelas SQLite.
+
+### Modulo analitico auxiliar
+
+#### [queries.py](E:/Projeto_Sentinel/scripts/analytics/queries.py)
+
+Reune consultas SQL executivas usadas pelo relatorio analitico.
+
+#### [relatorio_executivo.py](E:/Projeto_Sentinel/scripts/analytics/relatorio_executivo.py)
+
+Gera relatorio Excel em `outputs/`, com suporte a:
+
+- execucao manual;
+- execucao automatica;
+- regra estrita de `D-1`;
+- resumo executivo no terminal;
+- abas analiticas;
+- aba `DATA` para auditoria.
+
+## Fluxo ETL Atual
+
+### 1. Leitura e classificacao do relatorio geral
+
+O ETL le o `ANALYTICS_BASE_TICKETS_GERAL` e aplica padronizacao de colunas com tolerancia a:
+
+- variacao de acento;
+- variacao de caixa;
+- nomes equivalentes.
+
+Em seguida, o dataset e separado internamente em:
+
+- `SOLICITACAO`
+- `NOTIFICACAO`
+
+A identificacao utiliza o campo `formulario_ticket` por prefixo normalizado, e nao mais igualdade literal, para suportar valores reais como `Solicitações` e `Notificações`.
+
+### 2. Arquivamento logico de ANEXO
+
+Tickets classificados como anexo nao sao removidos do banco. Eles sao arquivados logicamente e ficam fora dos numeradores analiticos.
+
+Regra atual:
+
+- `tipo_manifestacao = ANEXO`
+- ou `classificacao_notificacoes` contenha simultaneamente `INFORMATIVO` e `ANEXO`
+
+Comportamento:
+
+- o ticket permanece armazenado;
+- `flag_arquivado_relatorio = 1`;
+- nao deve compor entrada, resolucao, produtividade ou demais indicadores finais.
+
+### 3. Protocolo institucional e chaves analiticas
+
+O ETL preserva as regras ja validadas de:
+
+- extracao de `protocolo_agenersa`;
+- extracao de `protocolo_procon`;
+- extracao de `protocolo_defensoria`;
+- extracao de `protocolo_codecon`;
+- geracao de `case_jec`.
+
+O `case_id` e definido com prioridade para `protocolo_agenersa` e, na ausencia dele, assume `ticket_id`.
+
+### 4. Tratamento de tickets duplicados por assunto
+
+O Zendesk pode replicar a mesma reclamacao em varias linhas quando o mesmo `ticket_id` possui mais de uma tabulacao de assunto.
+
+Decisao arquitetural adotada:
+
+- `tickets` permanece com 1 linha por `ticket_id`;
+- todos os assuntos distintos sao preservados em `ticket_assunto`.
+
+Isso permite:
+
+- contagem operacional correta de tickets;
+- rastreabilidade real de todos os assuntos tratados;
+- analise por assunto no Power BI sem inflar volume de tickets.
+
+Campos de suporte em `tickets`:
+
+- `qtde_assuntos_ticket`
+- `flag_multiplos_assuntos`
+
+### 5. Isolamento do N1
+
+O N1 e processado e arquivado em `tickets_n1`, mas nao interfere nos indicadores do N2. Trata-se de uma camada historica/auxiliar, mantida para necessidades futuras e conciliacoes.
+
+### 6. Enriquecimento complementar com GSS
+
+O GSS nao sobrescreve dados validos do Zendesk.
+
+Regra:
+
+- para cada `matricula`, se o campo estiver vazio ou nulo no ticket;
+- e existir valor util no GSS;
+- o valor e preenchido no dataset final.
+
+Colunas atualmente enriquecidas:
+
+- `bairro`
+- `municipio`
+- `logradouro`
+- `endereco`
+- `numero_porta`
+- `complemento`
+- `telefone`
+- `nome_cliente_gss`
+- `nome_requerente_gss`
+
+O contexto por matricula e construido selecionando a linha mais coerente do GSS com base em:
+
+- completude informacional;
+- `data_emissao`;
+- `data_execucao`;
+- `data_agendamento`;
+- `gss_os_id`.
+
+### 7. Enriquecimento de O.S. via GSS
+
+Quando `numero_os` nao vier preenchido no Zendesk, o ETL tenta inferir a O.S. correta por `matricula`.
+
+Estrategia:
+
+- busca candidatas de O.S. na base filtrada do GSS;
+- calcula score por proximidade de data;
+- calcula score por similaridade textual entre ticket e servico;
+- considera o status da O.S.;
+- escolhe automaticamente apenas quando a pontuacao e a margem entre candidatas sao suficientes.
+
+Saidas de auditoria:
+
+- `numero_os_original`
+- `numero_os_gss`
+- `gss_os_id`
+- `origem_numero_os`
+- `status_vinculo_os`
+- `score_vinculo_os`
+- `criterio_vinculo_os`
+
+### 8. Vinculo entre NOTIFICACAO e SOLICITACAO
+
+O modelo atual preserva dois principios:
+
+- a `SOLICITACAO` continua sendo o fato principal de analise;
+- a `NOTIFICACAO` e mantida para rastreabilidade e relacionamento.
+
+Prioridade de vinculo:
+
+1. tabela manual `ticket_vinculos_manuais`;
+2. chave explicita comum, se existir;
+3. `matricula + protocolo_referencia`;
+4. `matricula + assunto_normalizado`;
+5. classificacao como `AMBIGUO`, `SEM_VINCULO` ou `NOTIFICACAO_NAO_CARREGADA` quando aplicavel.
+
+Configuracao atual:
+
+- janela maxima de vinculo: `7` dias;
+- `data_entrada_reclamacao` acompanha a `data_criacao` da `SOLICITACAO`;
+- `data_criacao_notificacao` preserva a data original da notificacao relacionada.
+
+### 9. Derivacao da coluna Bloco
+
+Regra absoluta de negocio:
+
+- matricula iniciada por `40` -> `Bloco 4`
+- matricula iniciada por `10` -> `Bloco 1`
+- ausencia de matricula -> nulo
+
+A coluna `bloco` e mantida em:
+
+- `tickets`
+- `tickets_notificacao`
+- `tickets_n1`
+- `gss_ordens_servico` (legado de compatibilidade)
+
+## Arquivos Silver Gerados
+
+Saidas atuais em `02_silver`:
+
+- `ANALYTICS_BASE_TICKETS_GERAL_processed.xlsx`
+- `ANALYTICS_BASE_TICKETS_N1_processed.xlsx`
+- `PRE_CONTENCIOSO_AUDIENCIAS_processed.xlsx`
+- `ANALYTICS_BASE_TICKETS_ASSUNTOS_processed.xlsx`
 - `ANALYTICS_BASE_TICKETS_VINCULOS_processed.xlsx`
 
-No banco `03_database/pre_contencioso.db`, a base final fica pronta para consumo em Power BI.
+Arquivos legados removidos automaticamente pelo ETL:
 
-## Uso analitico recomendado
+- `ANALYTICS_BASE_TICKETS_GERAL_SOLICITACAO_processed.xlsx`
+- `ANALYTICS_BASE_TICKETS_GERAL_NOTIFICACAO_processed.xlsx`
+- `ANALYTICS_BASE_TICKETS_processed.xlsx`
+- `ANALYTICS_BASE_TICKETS_NOTIFICACAO_processed.xlsx`
+- `Base_GSS_processed.xlsx`
 
-Para indicadores de entrada, SLA e aging:
+## Banco de Dados - Estrutura Atual
 
-- use `tickets` como tabela fato principal
-- use `data_entrada_reclamacao` como data oficial da reclamacao
-- mantenha `data_criacao` como data original do ticket de solicitacao
-- monitore `status_vinculo` para identificar `VINCULADO`, `MANUAL`, `AMBIGUO`, `SEM_VINCULO` e `NOTIFICACAO_NAO_CARREGADA`
+O schema Gold atual esta detalhado no arquivo [MER_Projeto_Sentinel.mmd](E:/Projeto_Sentinel/MER_Projeto_Sentinel.mmd).
 
-## Operacao assistida
+### Tabelas de dominio
 
-Casos ambiguos podem ser resolvidos pela tabela `ticket_vinculos_manuais`, que tem precedencia sobre os criterios automaticos.
+- `clientes`: base de matriculas unicas.
+- `cases`: agrupador logico por `case_id`.
 
-Exemplo de uso:
+### Tabelas operacionais principais
 
-```sql
-INSERT INTO ticket_vinculos_manuais (
-    ticket_solicitacao_id,
-    ticket_notificacao_id,
-    justificativa,
-    usuario
-) VALUES (
-    200123,
-    100987,
-    'Validado manualmente pela operacao',
-    'analytics'
-);
+- `tickets`: fato principal da operacao N2, no grao `1 linha = 1 ticket de solicitacao`.
+- `tickets_notificacao`: persistencia dos tickets de notificacao.
+- `audiencias`: agenda de audiencias e reagendamentos.
+
+### Tabelas auxiliares de rastreabilidade
+
+- `ticket_assunto`: todos os assuntos distintos por ticket.
+- `ticket_relacionamentos`: resultado do vinculo entre solicitacao e notificacao.
+- `ticket_vinculos_manuais`: overrides manuais de vinculo.
+- `tickets_n1`: historico do N1, isolado do N2.
+
+### Tabela legada de compatibilidade
+
+- `gss_ordens_servico`: tabela mantida no schema por compatibilidade historica, mas nao faz parte da persistencia ativa do ETL atual.
+
+## Principais Regras de Persistencia
+
+Persistencia baseada em UPSERT:
+
+- `clientes` por `matricula`
+- `cases` por `case_id`
+- `tickets` por `ticket_id`
+- `tickets_notificacao` por `ticket_id`
+- `tickets_n1` por `ticket_id`
+- `ticket_assunto` por `ticket_assunto_id`
+- `ticket_relacionamentos` por `ticket_solicitacao_id`
+- `audiencias` por `ticket_id`
+
+Beneficios:
+
+- reprocessamento seguro;
+- atualizacao incremental;
+- ausencia de duplicidade por chave de negocio principal;
+- compatibilidade com reposicoes de arquivos brutos.
+
+## Execucao Operacional
+
+### ETL principal
+
+Com o projeto atualizado, a execucao padrao continua sendo apenas:
+
+```bash
+cd E:\Projeto_Sentinel
+python scripts\main_etl.py
 ```
 
-## Observacoes
+Esse comando:
 
-- o projeto foi desenhado para manter compatibilidade com o consumo atual no Power BI
-- as mudancas de vinculo foram implementadas de forma aditiva, sem remover colunas existentes
-- o banco pode ser recriado ou atualizado executando `python scripts/create_database.py`
+- atualiza o schema;
+- processa todas as fontes disponiveis em `01_raw`;
+- gera os datasets Silver;
+- persiste o Gold em SQLite.
 
-## Autor
+### Modulo analitico
 
-Equipe Analytics - Pre-Contencioso
+Relatorio executivo:
+
+```bash
+python scripts\analytics\relatorio_executivo.py
+```
+
+Ou em modo automatico:
+
+```bash
+python scripts\analytics\relatorio_executivo.py --auto
+```
+
+## Orientacoes de Conferencia
+
+Ao comparar relatorio cru versus relatorio processado do Zendesk N2:
+
+- nao comparar volume bruto de linhas;
+- comparar `ticket_id` distinto;
+- considerar que tickets com multiplos assuntos geram repeticao no cru e sao consolidados no Gold.
+
+Para analise de assuntos:
+
+- usar `ticket_assunto`, nao `tickets`.
+
+Para analise de entradas e resolucoes:
+
+- usar `tickets` e filtrar `flag_arquivado_relatorio = 0`.
+
+## Observacoes Tecnicas Relevantes
+
+- `UserWarning` de parsing em `data_reagendamento` nao interrompe o pipeline, mas indica heterogeneidade de formato na origem.
+- a base GSS pode conter ruido em alguns campos textuais, especialmente telefone e nome do requerente, o que demanda saneamento adicional se esses atributos forem usados em visualizacoes finais.
+- o ETL atual ordena arquivos por `mtime`; para cenarios com muitos fragmentos do N1, recomenda-se futura evolucao para ordenacao pela data embutida no nome do arquivo.
+
+## Proximos Passos Recomendados
+
+- camada de views Gold para Power BI;
+- padronizacao de data de referencia por dominio de negocio;
+- saneamento adicional da qualidade textual do GSS;
+- versao de auditoria operacional para reconciliacao de vinculos ambiguos;
+- estrategia formal de versionamento de cargas por lote.
+
+## Anexos Tecnicos
+
+- README tecnico do projeto: [README.md](E:/Projeto_Sentinel/README.md)
+- MER detalhado do schema: [MER_Projeto_Sentinel.mmd](E:/Projeto_Sentinel/MER_Projeto_Sentinel.mmd)
+- banco Gold: [pre_contencioso.db](E:/Projeto_Sentinel/03_database/pre_contencioso.db)
+
