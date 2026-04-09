@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from analytics.relatorio_diario_pre_contencioso import generate_daily_pre_contencioso_report
+from analytics.produtividade_semanal import generate_produtividade_semanal_report
 from create_database import setup_database
 from gss_matching import (
     enrich_with_gss,
@@ -71,6 +73,30 @@ AUTO_LINK_RULES = [
     LinkRule("titulo_normalizado", ("matricula", "assunto_normalizado"), 0.85, True),
 ]
 
+CLASSIFICATION_AUDIT_EXCEPTION_TICKETS = {26062949, 35478886}
+CLASSIFICATION_AUDIT_TARGET_GROUPS = {
+    "OCEANO CANAIS DE ATRITO N2",
+    "CANAIS DE ATRITO N2",
+}
+CLASSIFICATION_AUDIT_SUGGESTED_GROUP = "[routing]Oceano Canais de Atrito N2"
+CLASSIFICATION_AUDIT_CHANNEL_PREFIXES = {
+    "AGENCIA REGULADORA",
+    "CEDOC",
+    "CEJUSC",
+    "CODECON",
+    "DEFENSORIA",
+    "JEC",
+    "PROCON",
+}
+MANUAL_TICKET_FIELD_OVERRIDES = {
+    42726461: {
+        "tipo_manifestacao": "ANEXO",
+    },
+    42156383: {
+        "grupo_tickets": "[routing]Canais de Atrito N2",
+    },
+}
+
 
 def normalize_column_name(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", str(value))
@@ -108,6 +134,72 @@ def normalize_subject(value: object) -> str | None:
     normalized = re.sub(r"[^A-Z0-9 ]+", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized or None
+
+
+def normalize_classification_value(value: object) -> str | None:
+    normalized = normalize_text(value)
+    if normalized is None:
+        return None
+
+    if "::" in normalized:
+        normalized = normalized.split("::")[-1].strip()
+
+    normalized = re.sub(r"^\[[^\]]+\]\s*", "", normalized).strip()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized or None
+
+
+def is_governance_channel(value: object) -> bool:
+    normalized = normalize_classification_value(value)
+    if normalized is None:
+        return False
+
+    return any(
+        normalized == channel_prefix or normalized.startswith(f"{channel_prefix} ")
+        for channel_prefix in CLASSIFICATION_AUDIT_CHANNEL_PREFIXES
+    )
+
+
+def is_expected_n2_group(value: object) -> bool:
+    return normalize_classification_value(value) in CLASSIFICATION_AUDIT_TARGET_GROUPS
+
+
+def apply_ticket_manual_overrides(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    frame = df.copy()
+    ticket_ids = pd.to_numeric(frame["ticket_id"], errors="coerce")
+    override_count = 0
+
+    for ticket_id, overrides in MANUAL_TICKET_FIELD_OVERRIDES.items():
+        mask = ticket_ids == ticket_id
+        if not mask.any():
+            continue
+
+        for column, value in overrides.items():
+            if column not in frame.columns:
+                frame[column] = None
+            frame.loc[mask, column] = value
+        override_count += int(mask.sum())
+
+    if override_count:
+        tipo_manifestacao_norm = frame["tipo_manifestacao"].apply(normalize_text)
+        classificacao_notificacoes_norm = (
+            frame["classificacao_notificacoes"].apply(normalize_text)
+            if "classificacao_notificacoes" in frame.columns
+            else pd.Series([None] * len(frame), index=frame.index)
+        )
+        frame["flag_arquivado_relatorio"] = (
+            (tipo_manifestacao_norm == "ANEXO")
+            | (
+                classificacao_notificacoes_norm.fillna("").str.contains("INFORMATIVO", na=False)
+                & classificacao_notificacoes_norm.fillna("").str.contains("ANEXO", na=False)
+            )
+        ).astype(int)
+        logging.info("Aplicados overrides manuais de ticket em %s registro(s).", override_count)
+
+    return frame
 
 
 def first_not_null(row: pd.Series, columns: list[str]) -> str | None:
@@ -211,6 +303,8 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "complemento": "complemento",
         "desc_complemento": "complemento",
         "telefone": "telefone",
+        "nome_do_solicitante": "nome_solicitante",
+        "e_mail_do_solicitante": "email_solicitante",
         "tickets": "contagem_zendesk",
     }
 
@@ -257,6 +351,8 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         "telefone",
         "nome_cliente_gss",
         "nome_requerente_gss",
+        "nome_solicitante",
+        "email_solicitante",
         "classificacao_solicitacoes",
         "formulario_ticket",
         "classificacao_notificacoes",
@@ -334,6 +430,8 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         ticket_kind.upper(),
     )
 
+    df = apply_ticket_manual_overrides(df)
+
     if "titulo" in df.columns:
         df["protocolo_agenersa"] = df["titulo"].apply(
             lambda value: re.search(r"\d{10}", str(value)).group()
@@ -397,7 +495,128 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         axis=1,
     )
 
+    if ticket_kind == "solicitacao":
+        df = apply_classification_audit_rules(df)
+
     return df
+
+
+def apply_classification_audit_rules(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    frame = df.copy()
+    required_audit_columns = {
+        "flag_auditoria_classificacao": 0,
+        "motivo_auditoria_classificacao": None,
+        "status_auditoria_classificacao": None,
+        "grupo_sugerido_auditoria": None,
+        "tipo_solicitacao_original_auditoria": None,
+        "data_auditoria_classificacao": None,
+        "origem_regra_auditoria": None,
+        "canal_normalizado_auditoria": None,
+        "observacao_auditoria_classificacao": None,
+    }
+    for column, default in required_audit_columns.items():
+        if column not in frame.columns:
+            frame[column] = default
+
+    ticket_ids = pd.to_numeric(frame["ticket_id"], errors="coerce")
+    specific_exception_mask = ticket_ids.isin(CLASSIFICATION_AUDIT_EXCEPTION_TICKETS)
+
+    governance_channel_mask = frame["tipo_solicitacao"].apply(is_governance_channel)
+    unexpected_group_mask = ~frame["grupo_tickets"].apply(is_expected_n2_group)
+    active_metric_mask = (
+        pd.to_numeric(frame["flag_arquivado_relatorio"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+        == 0
+    )
+    automatic_audit_mask = (
+        governance_channel_mask
+        & unexpected_group_mask
+        & ~specific_exception_mask
+        & active_metric_mask
+    )
+    audit_mask = specific_exception_mask | automatic_audit_mask
+
+    frame.loc[:, "flag_auditoria_classificacao"] = 0
+    frame.loc[:, "motivo_auditoria_classificacao"] = None
+    frame.loc[:, "status_auditoria_classificacao"] = None
+    frame.loc[:, "grupo_sugerido_auditoria"] = None
+    frame.loc[:, "tipo_solicitacao_original_auditoria"] = None
+    frame.loc[:, "data_auditoria_classificacao"] = None
+    frame.loc[:, "origem_regra_auditoria"] = None
+    frame.loc[:, "canal_normalizado_auditoria"] = None
+    frame.loc[:, "observacao_auditoria_classificacao"] = None
+
+    if not audit_mask.any():
+        return frame
+
+    original_tipo_solicitacao = frame.loc[audit_mask, "tipo_solicitacao"].copy()
+    frame.loc[audit_mask, "flag_auditoria_classificacao"] = 1
+    frame.loc[audit_mask, "flag_arquivado_relatorio"] = 1
+    frame.loc[audit_mask, "status_auditoria_classificacao"] = "PENDENTE_VALIDACAO"
+    frame.loc[audit_mask, "data_auditoria_classificacao"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    frame.loc[audit_mask, "tipo_solicitacao_original_auditoria"] = original_tipo_solicitacao
+    frame.loc[audit_mask, "canal_normalizado_auditoria"] = original_tipo_solicitacao.apply(
+        normalize_classification_value
+    )
+
+    frame.loc[specific_exception_mask, "tipo_solicitacao"] = "Reclame Aqui"
+    frame.loc[specific_exception_mask, "origem_regra_auditoria"] = "EXCECAO_OPERACIONAL"
+    frame.loc[specific_exception_mask, "motivo_auditoria_classificacao"] = "EXCECAO_OPERACIONAL_RECLAME_AQUI"
+    frame.loc[
+        specific_exception_mask,
+        "observacao_auditoria_classificacao",
+    ] = "Ticket encerrado incorretamente como canal de atrito no Zendesk; segregado para auditoria."
+
+    frame.loc[automatic_audit_mask, "origem_regra_auditoria"] = "REGRA_AUTOMATICA_GRUPO_CANAL"
+    frame.loc[automatic_audit_mask, "motivo_auditoria_classificacao"] = (
+        "POSSIVEL_CLASSIFICACAO_INCORRETA_GRUPO_CANAL"
+    )
+    frame.loc[automatic_audit_mask, "grupo_sugerido_auditoria"] = CLASSIFICATION_AUDIT_SUGGESTED_GROUP
+    frame.loc[
+        automatic_audit_mask,
+        "observacao_auditoria_classificacao",
+    ] = "Validar grupo do ticket antes de eventual reclassificacao operacional."
+
+    logging.info(
+        "Tickets segregados para auditoria de classificacao: %s excecao operacional, %s regra automatica.",
+        int(specific_exception_mask.sum()),
+        int(automatic_audit_mask.sum()),
+    )
+    return frame
+
+
+def build_classification_audit_records(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "flag_auditoria_classificacao" not in df.columns:
+        return pd.DataFrame()
+
+    audit_df = df[pd.to_numeric(df["flag_auditoria_classificacao"], errors="coerce").fillna(0).astype(int) == 1].copy()
+    if audit_df.empty:
+        return pd.DataFrame()
+
+    records = pd.DataFrame(
+        {
+            "ticket_id": audit_df["ticket_id"],
+            "origem_regra": audit_df["origem_regra_auditoria"],
+            "status_auditoria": audit_df["status_auditoria_classificacao"],
+            "motivo_auditoria": audit_df["motivo_auditoria_classificacao"],
+            "tipo_solicitacao_original": audit_df["tipo_solicitacao_original_auditoria"],
+            "tipo_solicitacao_atual": audit_df["tipo_solicitacao"],
+            "grupo_tickets": audit_df["grupo_tickets"],
+            "grupo_sugerido": audit_df["grupo_sugerido_auditoria"],
+            "canal_normalizado": audit_df["canal_normalizado_auditoria"],
+            "data_criacao": audit_df["data_criacao"],
+            "data_resolucao": audit_df["data_resolucao"],
+            "atribuido": audit_df["atribuido"],
+            "titulo": audit_df["titulo"],
+            "observacao": audit_df["observacao_auditoria_classificacao"],
+            "arquivo_origem": audit_df["arquivo_origem"],
+        }
+    )
+    return records.drop_duplicates(subset=["ticket_id"], keep="last")
 
 
 def transform_n1_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -1048,6 +1267,8 @@ def process_and_load() -> None:
                 "telefone",
                 "nome_cliente_gss",
                 "nome_requerente_gss",
+                "nome_solicitante",
+                "email_solicitante",
                 "formulario_ticket",
                 "classificacao_notificacoes",
                 "flag_arquivado_relatorio",
@@ -1210,9 +1431,17 @@ def process_and_load() -> None:
                 "telefone",
                 "nome_cliente_gss",
                 "nome_requerente_gss",
+                "nome_solicitante",
+                "email_solicitante",
                 "formulario_ticket",
                 "classificacao_notificacoes",
                 "flag_arquivado_relatorio",
+                "flag_auditoria_classificacao",
+                "motivo_auditoria_classificacao",
+                "status_auditoria_classificacao",
+                "grupo_sugerido_auditoria",
+                "tipo_solicitacao_original_auditoria",
+                "data_auditoria_classificacao",
                 "qtde_assuntos_ticket",
                 "flag_multiplos_assuntos",
                 "protocolo_procon",
@@ -1241,10 +1470,27 @@ def process_and_load() -> None:
                 ],
             )
             upsert_sqlite(df_tickets_db, "tickets", "ticket_id", conn)
+
+            df_auditoria_classificacao = build_classification_audit_records(df_tickets)
+            if not df_auditoria_classificacao.empty:
+                df_auditoria_classificacao_db = prepare_for_sqlite(
+                    df_auditoria_classificacao,
+                    ["data_criacao", "data_resolucao"],
+                )
+                upsert_sqlite(
+                    df_auditoria_classificacao_db,
+                    "tickets_auditoria_classificacao",
+                    "ticket_id",
+                    conn,
+                )
+
             if not df_relacionamentos_db.empty:
                 upsert_sqlite(df_relacionamentos_db, "ticket_relacionamentos", "ticket_solicitacao_id", conn)
 
         backfill_bloco(conn)
+
+    generate_daily_pre_contencioso_report(DB_PATH)
+    generate_produtividade_semanal_report(DB_PATH)
 
 
 if __name__ == "__main__":

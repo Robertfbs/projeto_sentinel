@@ -80,9 +80,17 @@ def setup_database() -> None:
         telefone TEXT,
         nome_cliente_gss TEXT,
         nome_requerente_gss TEXT,
+        nome_solicitante TEXT,
+        email_solicitante TEXT,
         formulario_ticket TEXT,
         classificacao_notificacoes TEXT,
         flag_arquivado_relatorio INTEGER,
+        flag_auditoria_classificacao INTEGER,
+        motivo_auditoria_classificacao TEXT,
+        status_auditoria_classificacao TEXT,
+        grupo_sugerido_auditoria TEXT,
+        tipo_solicitacao_original_auditoria TEXT,
+        data_auditoria_classificacao DATETIME,
         qtde_assuntos_ticket INTEGER,
         flag_multiplos_assuntos INTEGER,
         protocolo_procon TEXT,
@@ -140,6 +148,8 @@ def setup_database() -> None:
         telefone TEXT,
         nome_cliente_gss TEXT,
         nome_requerente_gss TEXT,
+        nome_solicitante TEXT,
+        email_solicitante TEXT,
         formulario_ticket TEXT,
         classificacao_notificacoes TEXT,
         flag_arquivado_relatorio INTEGER,
@@ -209,6 +219,29 @@ def setup_database() -> None:
         atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (ticket_solicitacao_id) REFERENCES tickets(ticket_id),
         FOREIGN KEY (ticket_notificacao_id) REFERENCES tickets_notificacao(ticket_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS tickets_auditoria_classificacao (
+        ticket_id INTEGER PRIMARY KEY,
+        origem_regra TEXT NOT NULL,
+        status_auditoria TEXT NOT NULL DEFAULT 'PENDENTE_VALIDACAO',
+        motivo_auditoria TEXT,
+        tipo_solicitacao_original TEXT,
+        tipo_solicitacao_atual TEXT,
+        grupo_tickets TEXT,
+        grupo_sugerido TEXT,
+        canal_normalizado TEXT,
+        data_criacao DATETIME,
+        data_resolucao DATETIME,
+        atribuido TEXT,
+        titulo TEXT,
+        observacao TEXT,
+        arquivo_origem TEXT,
+        data_identificacao DATETIME DEFAULT CURRENT_TIMESTAMP,
+        data_validacao DATETIME,
+        validado_por TEXT,
+        acao_validacao TEXT,
+        FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
     );
 
     CREATE TABLE IF NOT EXISTS audiencias (
@@ -285,6 +318,9 @@ def setup_database() -> None:
 
     CREATE INDEX IF NOT EXISTS idx_ticket_assunto_normalizado
         ON ticket_assunto (assunto_normalizado);
+
+    CREATE INDEX IF NOT EXISTS idx_tickets_auditoria_classificacao_status
+        ON tickets_auditoria_classificacao (status_auditoria, origem_regra);
     """
 
     ticket_columns = [
@@ -322,9 +358,17 @@ def setup_database() -> None:
         "telefone TEXT",
         "nome_cliente_gss TEXT",
         "nome_requerente_gss TEXT",
+        "nome_solicitante TEXT",
+        "email_solicitante TEXT",
         "formulario_ticket TEXT",
         "classificacao_notificacoes TEXT",
         "flag_arquivado_relatorio INTEGER",
+        "flag_auditoria_classificacao INTEGER",
+        "motivo_auditoria_classificacao TEXT",
+        "status_auditoria_classificacao TEXT",
+        "grupo_sugerido_auditoria TEXT",
+        "tipo_solicitacao_original_auditoria TEXT",
+        "data_auditoria_classificacao DATETIME",
         "qtde_assuntos_ticket INTEGER",
         "flag_multiplos_assuntos INTEGER",
         "ticket_solicitacao_id INTEGER",
@@ -362,6 +406,8 @@ def setup_database() -> None:
         "telefone TEXT",
         "nome_cliente_gss TEXT",
         "nome_requerente_gss TEXT",
+        "nome_solicitante TEXT",
+        "email_solicitante TEXT",
         "formulario_ticket TEXT",
         "classificacao_notificacoes TEXT",
         "flag_arquivado_relatorio INTEGER",
