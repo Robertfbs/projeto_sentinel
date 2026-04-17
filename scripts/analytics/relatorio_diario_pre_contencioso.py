@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = PROJECT_ROOT / "03_database" / "pre_contencioso.db"
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 OUTPUT_FILE_NAME = "relatorio_diario_pre-contencioso.xlsx"
-SKIP_TOTAL_ROW_SHEETS = {"DATA", "audiencias_vencidas_pendentes"}
+SKIP_TOTAL_ROW_SHEETS = {"DATA", "audiencias_vencidas_pendentes", "movimentacoes_excecao"}
 
 VISIBLE_DATA_COLUMNS = [
     "ticket_id",
@@ -40,13 +40,13 @@ VISIBLE_DATA_COLUMNS = [
 
 HIDDEN_DATA_COLUMNS = [
     "status_normalizado",
-    "flag_entrada_d1",
-    "flag_resolvido_d1",
-    "flag_entrada_audiencia_d1",
+    "flag_entrada_dia_util_anterior",
+    "flag_resolvido_dia_util_anterior",
+    "flag_entrada_audiencia_dia_util_anterior",
     "flag_audiencia_semana_aberta",
     "flag_audiencia_semana_encerrada",
     "data_referencia_execucao",
-    "data_referencia_d1",
+    "data_referencia_dia_util_anterior",
     "data_inicio_semana_execucao",
     "data_fim_semana_execucao",
 ]
@@ -58,14 +58,26 @@ DATE_COLUMNS = {
     "data_reagendamento",
     "data_audiencia_efetiva",
     "data_referencia_execucao",
-    "data_referencia_d1",
+    "data_referencia_dia_util_anterior",
     "data_inicio_semana_execucao",
     "data_fim_semana_execucao",
     "data_referencia_entrada",
     "data_referencia_resolucao",
     "data_inicio_janela",
     "data_fim_janela",
+    "data_entrada",
 }
+
+BRAZIL_FIXED_HOLIDAYS = (
+    (1, 1),
+    (4, 21),
+    (5, 1),
+    (9, 7),
+    (10, 12),
+    (11, 2),
+    (11, 15),
+    (12, 25),
+)
 
 DAILY_BASE_SQL = """
 SELECT
@@ -94,20 +106,20 @@ SELECT
     a.preposto,
     a.local_procon,
     :today AS data_referencia_execucao,
-    :d1 AS data_referencia_d1,
+    :business_day AS data_referencia_dia_util_anterior,
     :today AS data_inicio_semana_execucao,
     :week_end AS data_fim_semana_execucao,
     CASE
-        WHEN date(t.data_criacao) = :d1 THEN 1 ELSE 0
-    END AS flag_entrada_d1,
+        WHEN date(t.data_criacao) = :business_day THEN 1 ELSE 0
+    END AS flag_entrada_dia_util_anterior,
     CASE
-        WHEN date(t.data_resolucao) = :d1 THEN 1 ELSE 0
-    END AS flag_resolvido_d1,
+        WHEN date(t.data_resolucao) = :business_day THEN 1 ELSE 0
+    END AS flag_resolvido_dia_util_anterior,
     CASE
-        WHEN date(t.data_criacao) = :d1
+        WHEN date(t.data_criacao) = :business_day
              AND a.audiencia_id IS NOT NULL
         THEN 1 ELSE 0
-    END AS flag_entrada_audiencia_d1,
+    END AS flag_entrada_audiencia_dia_util_anterior,
     CASE
         WHEN a.audiencia_id IS NOT NULL
              AND date(COALESCE(a.data_reagendamento, a.data_audiencia)) BETWEEN :today AND :week_end
@@ -131,8 +143,8 @@ WHERE
         OR UPPER(TRIM(COALESCE(t.formulario_ticket, ''))) LIKE 'SOLICIT%'
     )
     AND (
-        date(t.data_criacao) = :d1
-        OR date(t.data_resolucao) = :d1
+        date(t.data_criacao) = :business_day
+        OR date(t.data_resolucao) = :business_day
         OR (
             a.audiencia_id IS NOT NULL
             AND date(COALESCE(a.data_reagendamento, a.data_audiencia)) BETWEEN :today AND :week_end
@@ -144,12 +156,94 @@ ORDER BY
     t.ticket_id DESC
 """
 
+EXCEPTION_MOVEMENTS_SQL = """
+SELECT
+    date(t.data_criacao) AS data_entrada,
+    date(t.data_resolucao) AS data_resolucao,
+    COALESCE(NULLIF(TRIM(t.atribuido), ''), 'NAO ATRIBUIDO') AS atribuido,
+    COALESCE(NULLIF(TRIM(t.tipo_solicitacao), ''), 'NAO INFORMADO') AS canal
+FROM tickets AS t
+WHERE
+    COALESCE(t.flag_arquivado_relatorio, 0) = 0
+    AND UPPER(TRIM(COALESCE(t.tipo_manifestacao, ''))) <> 'ANEXO'
+    AND (
+        t.formulario_ticket IS NULL
+        OR UPPER(TRIM(COALESCE(t.formulario_ticket, ''))) LIKE 'SOLICIT%'
+    )
+    AND :has_exception_window = 1
+    AND (
+        date(t.data_criacao) BETWEEN :exception_start AND :exception_end
+        OR date(t.data_resolucao) BETWEEN :exception_start AND :exception_end
+    )
+ORDER BY
+    date(t.data_criacao) ASC,
+    date(t.data_resolucao) ASC,
+    atribuido ASC,
+    canal ASC
+"""
 
-def resolve_reference_window(reference_date: date | None = None) -> tuple[date, date, date]:
+
+def calculate_easter_sunday(year: int) -> date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def build_holiday_calendar(years: set[int]) -> set[date]:
+    holidays: set[date] = set()
+    for year in years:
+        holidays.update({date(year, month, day) for month, day in BRAZIL_FIXED_HOLIDAYS})
+        easter = calculate_easter_sunday(year)
+        holidays.update(
+            {
+                easter - timedelta(days=48),  # Carnival Monday
+                easter - timedelta(days=47),  # Carnival Tuesday
+                easter - timedelta(days=2),   # Good Friday
+                easter + timedelta(days=60),  # Corpus Christi
+            }
+        )
+    return holidays
+
+
+def is_business_day(target_date: date, holidays: set[date]) -> bool:
+    return target_date.weekday() < 5 and target_date not in holidays
+
+
+def resolve_previous_business_day(reference_date: date, holidays: set[date]) -> date:
+    candidate = reference_date - timedelta(days=1)
+    while not is_business_day(candidate, holidays):
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def resolve_reference_window(
+    reference_date: date | None = None,
+) -> tuple[date, date, date, date | None, date | None, set[date]]:
     today = reference_date or date.today()
-    d1 = today - timedelta(days=1)
+    holiday_years = {today.year, (today - timedelta(days=7)).year, (today + timedelta(days=7)).year}
+    holidays = build_holiday_calendar(holiday_years)
+    business_day = resolve_previous_business_day(today, holidays)
     week_end = today + timedelta(days=max(0, 4 - today.weekday()))
-    return today, d1, week_end
+    exception_start = business_day + timedelta(days=1)
+    exception_end = today - timedelta(days=1)
+
+    if exception_start > exception_end:
+        exception_start = None
+        exception_end = None
+
+    return today, business_day, week_end, exception_start, exception_end, holidays
 
 
 def normalize_subject_for_report(value: object) -> object:
@@ -173,7 +267,7 @@ def normalize_report_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
 
     df = dataframe.copy()
 
-    for text_column in ["assunto", "tipo_solicitacao"]:
+    for text_column in ["assunto", "tipo_solicitacao", "canal"]:
         if text_column in df.columns:
             df[text_column] = df[text_column].apply(normalize_subject_for_report)
 
@@ -188,28 +282,35 @@ def normalize_report_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
 def load_daily_data(
     connection: sqlite3.Connection,
     reference_date: date | None = None,
-) -> tuple[pd.DataFrame, date, date, date]:
-    today, d1, week_end = resolve_reference_window(reference_date)
+) -> tuple[pd.DataFrame, pd.DataFrame, date, date, date, date | None, date | None]:
+    today, business_day, week_end, exception_start, exception_end, _holidays = resolve_reference_window(reference_date)
     params = {
         "today": today.strftime("%Y-%m-%d"),
-        "d1": d1.strftime("%Y-%m-%d"),
+        "business_day": business_day.strftime("%Y-%m-%d"),
         "week_end": week_end.strftime("%Y-%m-%d"),
     }
     df = pd.read_sql_query(DAILY_BASE_SQL, connection, params=params)
-    return df, today, d1, week_end
+    exception_params = {
+        "has_exception_window": 1 if exception_start and exception_end else 0,
+        "exception_start": exception_start.strftime("%Y-%m-%d") if exception_start else "",
+        "exception_end": exception_end.strftime("%Y-%m-%d") if exception_end else "",
+    }
+    exception_df = pd.read_sql_query(EXCEPTION_MOVEMENTS_SQL, connection, params=exception_params)
+    return df, exception_df, today, business_day, week_end, exception_start, exception_end
 
 
 def build_report_frames(
     data_df: pd.DataFrame,
+    exception_df: pd.DataFrame,
     today: date,
-    d1: date,
+    business_day: date,
     week_end: date,
 ) -> dict[str, pd.DataFrame]:
     df = data_df.copy()
 
-    entrada_df = df[df["flag_entrada_d1"] == 1].copy()
-    resolvidos_df = df[df["flag_resolvido_d1"] == 1].copy()
-    entrada_audiencias_df = df[df["flag_entrada_audiencia_d1"] == 1].copy()
+    entrada_df = df[df["flag_entrada_dia_util_anterior"] == 1].copy()
+    resolvidos_df = df[df["flag_resolvido_dia_util_anterior"] == 1].copy()
+    entrada_audiencias_df = df[df["flag_entrada_audiencia_dia_util_anterior"] == 1].copy()
     audiencias_abertas_df = df[df["flag_audiencia_semana_aberta"] == 1].copy()
     audiencias_encerradas_df = df[df["flag_audiencia_semana_encerrada"] == 1].copy()
     today_ts = pd.Timestamp(today)
@@ -222,7 +323,7 @@ def build_report_frames(
     entrada_total = pd.DataFrame(
         [
             {
-                "data_referencia_entrada": d1.strftime("%Y-%m-%d"),
+                "data_referencia_entrada": business_day.strftime("%Y-%m-%d"),
                 "qtde_tickets": int(entrada_df["ticket_id"].nunique()),
             }
         ]
@@ -238,7 +339,7 @@ def build_report_frames(
     resolvidos_total = pd.DataFrame(
         [
             {
-                "data_referencia_resolucao": d1.strftime("%Y-%m-%d"),
+                "data_referencia_resolucao": business_day.strftime("%Y-%m-%d"),
                 "qtde_tickets_resolvidos": int(resolvidos_df["ticket_id"].nunique()),
             }
         ]
@@ -254,7 +355,7 @@ def build_report_frames(
     entrada_audiencias = pd.DataFrame(
         [
             {
-                "data_referencia_entrada": d1.strftime("%Y-%m-%d"),
+                "data_referencia_entrada": business_day.strftime("%Y-%m-%d"),
                 "qtde_tickets_com_audiencia": int(entrada_audiencias_df["ticket_id"].nunique()),
             }
         ]
@@ -321,6 +422,12 @@ def build_report_frames(
 
     ordered_data_columns = [column for column in VISIBLE_DATA_COLUMNS + HIDDEN_DATA_COLUMNS if column in df.columns]
     df = df[ordered_data_columns].copy()
+    exception_export = exception_df[["data_entrada", "data_resolucao", "atribuido", "canal"]].copy()
+    exception_export = exception_export.sort_values(
+        ["data_entrada", "data_resolucao", "atribuido", "canal"],
+        ascending=[True, True, True, True],
+        kind="stable",
+    )
 
     reports = {
         "DATA": df,
@@ -332,6 +439,7 @@ def build_report_frames(
         "audiencias_semana_abertas": audiencias_semana_abertas,
         "audiencias_semana_encerradas": audiencias_semana_encerradas,
         "audiencias_vencidas_pendentes": audiencias_vencidas_pendentes,
+        "movimentacoes_excecao": exception_export,
     }
 
     return {sheet_name: normalize_report_dataframe(report_df) for sheet_name, report_df in reports.items()}
@@ -465,9 +573,11 @@ def generate_daily_pre_contencioso_report(
         raise FileNotFoundError(f"Banco de dados nao encontrado em: {database_path}")
 
     with sqlite3.connect(database_path) as connection:
-        data_df, today, d1, week_end = load_daily_data(connection, reference_date)
+        data_df, exception_df, today, business_day, week_end, _exception_start, _exception_end = load_daily_data(
+            connection, reference_date
+        )
 
-    report_frames = build_report_frames(data_df, today, d1, week_end)
+    report_frames = build_report_frames(data_df, exception_df, today, business_day, week_end)
     output_path = write_report_excel(report_frames)
     logging.info("Relatorio diario pre-contencioso gerado em: %s", output_path)
     return output_path

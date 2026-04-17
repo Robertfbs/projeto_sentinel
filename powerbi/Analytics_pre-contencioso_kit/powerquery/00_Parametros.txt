@@ -1,0 +1,15 @@
+Crie estes parametros no Power BI Desktop:
+
+1. pDbPath
+   Tipo: Text
+   Valor sugerido:
+   E:\Projeto_Sentinel\03_database\pre_contencioso.db
+
+2. pSqliteDriverName
+   Tipo: Text
+   Valor sugerido:
+   SQLite3 ODBC Driver
+
+Observacao:
+Se a sua instalacao expuser nome de driver diferente, use exatamente o nome que
+aparecer no administrador ODBC.

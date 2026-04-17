@@ -1,0 +1,11 @@
+# Power BI Desktop cache and temporary files
+.pbi/
+**/.pbi/
+**/localSettings.json
+**/cache.abf
+**/cache.*
+**/*.tmp
+
+# Optional exported binaries
+*.pbix
+*.pbit

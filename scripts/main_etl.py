@@ -10,6 +10,7 @@ import pandas as pd
 
 from analytics.relatorio_diario_pre_contencioso import generate_daily_pre_contencioso_report
 from analytics.produtividade_semanal import generate_produtividade_semanal_report
+from analytics.base_higienizada_pre_contencioso import generate_base_higienizada_pre_contencioso
 from create_database import setup_database
 from gss_matching import (
     enrich_with_gss,
@@ -88,12 +89,48 @@ CLASSIFICATION_AUDIT_CHANNEL_PREFIXES = {
     "JEC",
     "PROCON",
 }
+MANUAL_GROUP_TICKET_TARGET = "[routing]Oceano Canais de Atrito N2"
+MANUAL_NOTIFICATION_ANEXO_CLASSIFICATION = "Informativo::Anexo"
+GROUP_TICKET_MANUAL_CORRECTION_IDS = {
+    16375648, 16967132, 17307055, 17314565, 17422188, 17431001, 17668859, 17723568, 17726761,
+    17920735, 18767628, 18774389, 18776665, 18777336, 18791463, 18888200, 18895792, 18897156,
+    18899968, 18902013, 18906329, 18951421, 18953455, 18982186, 19023502, 19039384, 19043289,
+    19048077, 19049548, 20049504, 21582808, 36814147, 39903886, 39925052, 42068221, 42082851,
+}
+ANEXO_MANUAL_RECLASSIFICATION_IDS = {
+    29306570, 19379693, 16915599, 17420825, 17809211, 20049854, 21834657, 22252482, 22824066,
+    23010012, 23099939, 23105691, 23785142, 23865809, 24116065, 24128139, 24142849, 24353117,
+    24365075, 24468098, 24571091, 24646895, 24747658, 24751324, 24789903, 24790716, 24879500,
+    24884791, 24891285, 24892439, 24905575, 25044931, 25047117, 25063060, 25086266, 25103184,
+    25113119, 25149739, 25159291, 25208568, 25494750, 25496341, 25542385, 25564952, 25567301,
+    25567677, 25693412, 25693506, 25754933, 25779628, 25902665, 25935017, 25947870, 26210089,
+    26321480, 26404598, 26405794, 26461797, 26597818, 26642509, 26644401, 26653097, 26659755,
+    26663172, 26853844, 26855759, 27077018, 27113391, 27135129, 27135466, 27332047, 27450786,
+    27463767, 27485856, 27724071, 27748030, 27800520, 27920800, 28075352, 28147303, 28329453,
+    28572356, 28670398, 28677222, 28678865, 28886764, 28985721, 29126320, 29130337, 29267413,
+    29369891, 29761580, 30032223, 30039956, 30225153, 30247871, 30344167, 30522032, 30604338,
+    30832869, 30939954, 31246187, 31246202, 31324735, 31377072, 31612137, 31612342, 31615944,
+    32037895, 32340768, 32419740, 32574043, 32905410, 33023739, 33191792, 33353937, 33356579,
+    33357202, 33528536, 33560144, 33604130, 33702394, 33785792, 34004720, 34197791, 34288261,
+    34522207, 34544363, 34788134, 34810082, 34934001, 35007402, 35009274, 35012010, 35039967,
+    35145202, 35616001, 35741633, 35970075, 35977403, 36104189, 36106688, 36107312, 36373384,
+    36374670, 36379430, 36379431, 36384975, 36594549, 36682734, 36844624, 36941064, 36944039,
+    37228827, 37231704, 37505226, 37546384, 37551416, 37629170, 37646340, 37703947, 37705052,
+    37708128, 37999249, 38038155, 38368159, 38398146, 38693336, 38893252, 38934229, 39505547,
+    39508512, 39663867, 39702035, 39703072, 39768656, 39772002, 39839658, 39979285, 39982115,
+    40144740, 40231768, 40767639, 40775798, 41133818, 20472600, 32819501, 35601565, 35649490,
+    37714282, 37714346, 37801019,
+}
 MANUAL_TICKET_FIELD_OVERRIDES = {
     42726461: {
         "tipo_manifestacao": "ANEXO",
     },
     42156383: {
         "grupo_tickets": "[routing]Canais de Atrito N2",
+    },
+    18133869: {
+        "atribuido": "Erica Mara de Souza Costa",
+        "grupo_tickets": MANUAL_GROUP_TICKET_TARGET,
     },
 }
 
@@ -164,13 +201,32 @@ def is_expected_n2_group(value: object) -> bool:
     return normalize_classification_value(value) in CLASSIFICATION_AUDIT_TARGET_GROUPS
 
 
-def apply_ticket_manual_overrides(df: pd.DataFrame) -> pd.DataFrame:
+def apply_ticket_manual_overrides(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
     if df.empty:
         return df
 
     frame = df.copy()
     ticket_ids = pd.to_numeric(frame["ticket_id"], errors="coerce")
     override_count = 0
+
+    group_mask = ticket_ids.isin(GROUP_TICKET_MANUAL_CORRECTION_IDS)
+    if group_mask.any():
+        if "grupo_tickets" not in frame.columns:
+            frame["grupo_tickets"] = None
+        frame.loc[group_mask, "grupo_tickets"] = MANUAL_GROUP_TICKET_TARGET
+        override_count += int(group_mask.sum())
+
+    anexo_mask = ticket_ids.isin(ANEXO_MANUAL_RECLASSIFICATION_IDS)
+    if anexo_mask.any():
+        if ticket_kind == "solicitacao":
+            if "tipo_manifestacao" not in frame.columns:
+                frame["tipo_manifestacao"] = None
+            frame.loc[anexo_mask, "tipo_manifestacao"] = "ANEXO"
+        elif ticket_kind == "notificacao":
+            if "classificacao_notificacoes" not in frame.columns:
+                frame["classificacao_notificacoes"] = None
+            frame.loc[anexo_mask, "classificacao_notificacoes"] = MANUAL_NOTIFICATION_ANEXO_CLASSIFICATION
+        override_count += int(anexo_mask.sum())
 
     for ticket_id, overrides in MANUAL_TICKET_FIELD_OVERRIDES.items():
         mask = ticket_ids == ticket_id
@@ -430,7 +486,7 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         ticket_kind.upper(),
     )
 
-    df = apply_ticket_manual_overrides(df)
+    df = apply_ticket_manual_overrides(df, ticket_kind)
 
     if "titulo" in df.columns:
         df["protocolo_agenersa"] = df["titulo"].apply(
@@ -1491,6 +1547,7 @@ def process_and_load() -> None:
 
     generate_daily_pre_contencioso_report(DB_PATH)
     generate_produtividade_semanal_report(DB_PATH)
+    generate_base_higienizada_pre_contencioso(DB_PATH)
 
 
 if __name__ == "__main__":

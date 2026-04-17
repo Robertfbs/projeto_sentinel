@@ -1,0 +1,122 @@
+-- Medidas base
+Tickets Total =
+COUNTROWS ( fTicketsSolicitacao )
+
+Tickets Entradas =
+COUNTROWS ( fTicketsSolicitacao )
+
+Tickets Resolvidos =
+CALCULATE (
+    COUNTROWS ( fTicketsSolicitacao ),
+    NOT ISBLANK ( fTicketsSolicitacao[data_resolucao] )
+)
+
+Tickets Abertos =
+CALCULATE (
+    COUNTROWS ( fTicketsSolicitacao ),
+    NOT (
+        UPPER ( fTicketsSolicitacao[status] ) IN { "SOLVED", "CLOSED", "RESOLVIDO", "FECHADO" }
+    )
+)
+
+Tickets Fechados =
+CALCULATE (
+    COUNTROWS ( fTicketsSolicitacao ),
+    UPPER ( fTicketsSolicitacao[status] ) IN { "SOLVED", "CLOSED", "RESOLVIDO", "FECHADO" }
+)
+
+% Resolvidos =
+DIVIDE ( [Tickets Fechados], [Tickets Total] )
+
+% Em Tratamento =
+DIVIDE ( [Tickets Abertos], [Tickets Total] )
+
+Tempo Medio Resolucao (Dias) =
+AVERAGEX (
+    FILTER (
+        fTicketsSolicitacao,
+        NOT ISBLANK ( fTicketsSolicitacao[data_resolucao] )
+            && NOT ISBLANK ( fTicketsSolicitacao[data_entrada] )
+    ),
+    DATEDIFF (
+        fTicketsSolicitacao[data_entrada],
+        fTicketsSolicitacao[data_resolucao],
+        DAY
+    )
+)
+
+Tempo Medio Resolucao (Horas) =
+AVERAGEX (
+    FILTER (
+        fTicketsSolicitacao,
+        NOT ISBLANK ( fTicketsSolicitacao[data_resolucao] )
+            && NOT ISBLANK ( fTicketsSolicitacao[data_entrada] )
+    ),
+    DATEDIFF (
+        fTicketsSolicitacao[data_entrada],
+        fTicketsSolicitacao[data_resolucao],
+        HOUR
+    )
+)
+
+-- Produtividade
+Resolvidos por Colaborador =
+[Tickets Resolvidos]
+
+Resolvidos por Canal =
+[Tickets Resolvidos]
+
+Resolvidos MTD =
+TOTALMTD ( [Tickets Resolvidos], dCalendario[Data] )
+
+Resolvidos YTD =
+TOTALYTD ( [Tickets Resolvidos], dCalendario[Data] )
+
+-- Audiencias
+Audiencias Total =
+COUNTROWS ( fAudiencias )
+
+Audiencias Pendentes =
+CALCULATE (
+    COUNTROWS ( fAudiencias ),
+    fAudiencias[data_audiencia] >= TODAY ()
+        || NOT (
+            UPPER ( fAudiencias[status] ) IN { "SOLVED", "CLOSED", "RESOLVIDO", "FECHADO" }
+        )
+)
+
+Audiencias Vencidas =
+CALCULATE (
+    COUNTROWS ( fAudiencias ),
+    fAudiencias[data_audiencia] < TODAY (),
+    NOT (
+        UPPER ( fAudiencias[status] ) IN { "SOLVED", "CLOSED", "RESOLVIDO", "FECHADO" }
+    )
+)
+
+Audiencias Encerradas =
+CALCULATE (
+    COUNTROWS ( fAudiencias ),
+    UPPER ( fAudiencias[status] ) IN { "SOLVED", "CLOSED", "RESOLVIDO", "FECHADO" }
+)
+
+-- Geo
+Tickets por Municipio =
+[Tickets Total]
+
+Tickets por Bairro =
+[Tickets Total]
+
+-- Rankings / auxiliares visuais
+Ranking Canal =
+RANKX ( ALLSELECTED ( dCanal[canal_normalizado] ), [Tickets Total], , DESC, DENSE )
+
+Ranking Assunto =
+RANKX ( ALLSELECTED ( dAssunto[assunto_normalizado] ), [Tickets Total], , DESC, DENSE )
+
+Ranking Colaborador =
+RANKX ( ALLSELECTED ( dColaborador[colaborador] ), [Tickets Resolvidos], , DESC, DENSE )
+
+-- Observacao:
+-- Medidas "Dentro do Prazo" / "Fora do Prazo" nao foram incluidas como oficiais,
+-- pois o DW ainda nao possui data de vencimento estruturada e confiavel por ticket.
