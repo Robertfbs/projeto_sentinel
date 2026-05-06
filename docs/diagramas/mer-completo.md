@@ -1,0 +1,286 @@
+# MER Completo — Modelo Entidade-Relacionamento
+
+**Audiencia**: AMBOS (Desenvolvedores e Analistas)
+
+[Voltar ao indice](../README.md) | [Ver descricao campo a campo](../05-esquema-banco-de-dados.md)
+
+---
+
+## Convencoes
+
+| Simbolo | Significado |
+|---|---|
+| **PK** | Chave primaria (Primary Key) |
+| **FK** | Chave estrangeira (Foreign Key) |
+| **UK** | Chave unica (Unique Key) |
+| `||--o{` | Um para muitos (1:N) |
+| `||--o\|` | Um para zero ou um (1:0..1) |
+
+**Nota:** As tabelas `tickets_n1` e `gss_ordens_servico` nao possuem FK formal no diagrama por decisao intencional de desenho — sao tabelas isoladas (historica e legada, respectivamente).
+
+---
+
+## Diagrama ER Completo
+
+```mermaid
+erDiagram
+    CLIENTES {
+        TEXT matricula PK
+    }
+
+    CASES {
+        TEXT case_id PK
+        TEXT protocolo_agenersa
+    }
+
+    TICKETS {
+        INTEGER ticket_id PK
+        TEXT case_id FK
+        TEXT matricula FK
+        TEXT bloco
+        TEXT numero_os
+        TEXT numero_os_original
+        TEXT numero_os_gss
+        TEXT gss_os_id
+        TEXT origem_numero_os
+        TEXT status_vinculo_os
+        REAL score_vinculo_os
+        TEXT criterio_vinculo_os
+        DATETIME data_criacao
+        DATETIME data_resolucao
+        TEXT status
+        TEXT atribuido
+        TEXT titulo
+        TEXT assunto
+        TEXT tipo_conversa
+        TEXT tipo_solicitacao
+        TEXT tipo_manifestacao
+        TEXT resultado_tratativa
+        TEXT tags_ticket
+        TEXT grupo_tickets
+        TEXT superintendencia_adr
+        TEXT canal_origem
+        TEXT cpf_cliente
+        TEXT passou_nivel_1
+        TEXT canais_de_atrito
+        TEXT protocolo_referencia_informado
+        TEXT motivo_espera
+        TEXT prioridade_ticket
+        TEXT controle_interno
+        TEXT concessionaria
+        TEXT classificacao_solicitacoes
+        TEXT bairro
+        TEXT municipio
+        TEXT logradouro
+        TEXT endereco
+        TEXT numero_porta
+        TEXT complemento
+        TEXT telefone
+        TEXT nome_cliente_gss
+        TEXT nome_requerente_gss
+        TEXT formulario_ticket
+        TEXT classificacao_notificacoes
+        INTEGER flag_arquivado_relatorio
+        INTEGER qtde_assuntos_ticket
+        INTEGER flag_multiplos_assuntos
+        TEXT protocolo_procon
+        TEXT protocolo_defensoria
+        TEXT protocolo_codecon
+        TEXT case_jec
+        INTEGER ticket_solicitacao_id
+        INTEGER ticket_notificacao_id
+        DATETIME data_entrada_reclamacao
+        DATETIME data_criacao_solicitacao
+        DATETIME data_criacao_notificacao
+        INTEGER dias_defasagem_abertura
+        TEXT criterio_vinculo
+        REAL confianca_vinculo
+        TEXT status_vinculo
+    }
+
+    TICKETS_NOTIFICACAO {
+        INTEGER ticket_id PK
+        TEXT case_id
+        TEXT matricula
+        TEXT bloco
+        TEXT numero_os
+        DATETIME data_criacao
+        DATETIME data_resolucao
+        TEXT status
+        TEXT atribuido
+        TEXT titulo
+        TEXT assunto
+        TEXT tipo_conversa
+        TEXT tipo_solicitacao
+        TEXT tipo_manifestacao
+        TEXT resultado_tratativa
+        TEXT tags_ticket
+        TEXT grupo_tickets
+        TEXT superintendencia_adr
+        TEXT canal_origem
+        TEXT cpf_cliente
+        TEXT passou_nivel_1
+        TEXT canais_de_atrito
+        TEXT protocolo_referencia_informado
+        TEXT motivo_espera
+        TEXT prioridade_ticket
+        TEXT controle_interno
+        TEXT concessionaria
+        TEXT classificacao_solicitacoes
+        TEXT bairro
+        TEXT municipio
+        TEXT logradouro
+        TEXT endereco
+        TEXT numero_porta
+        TEXT complemento
+        TEXT telefone
+        TEXT nome_cliente_gss
+        TEXT nome_requerente_gss
+        TEXT formulario_ticket
+        TEXT classificacao_notificacoes
+        INTEGER flag_arquivado_relatorio
+        TEXT protocolo_procon
+        TEXT protocolo_defensoria
+        TEXT protocolo_codecon
+        TEXT case_jec
+        TEXT arquivo_origem
+        DATETIME data_carga
+    }
+
+    TICKETS_N1 {
+        INTEGER ticket_id PK
+        TEXT matricula
+        TEXT bloco
+        DATETIME data_criacao
+        DATETIME data_resolucao
+        TEXT status
+        TEXT titulo
+        TEXT assunto
+        TEXT grupo_tickets
+        TEXT canal_ticket
+        TEXT canal_origem
+        TEXT formulario_ticket
+        TEXT tipo_ticket
+        TEXT conversation_id
+        TEXT tipo_conversa
+        TEXT arquivo_origem
+        DATETIME data_carga
+    }
+
+    TICKET_ASSUNTO {
+        TEXT ticket_assunto_id PK
+        INTEGER ticket_id FK
+        TEXT formulario_ticket
+        TEXT assunto_raw
+        TEXT assunto_normalizado
+        INTEGER ordem_assunto
+        INTEGER flag_assunto_principal
+        TEXT arquivo_origem
+        DATETIME data_carga
+    }
+
+    TICKET_RELACIONAMENTOS {
+        INTEGER ticket_solicitacao_id PK
+        INTEGER ticket_notificacao_id FK
+        TEXT status_vinculo
+        TEXT criterio_vinculo
+        REAL confianca_vinculo
+        DATETIME data_entrada_reclamacao
+        DATETIME data_criacao_solicitacao
+        DATETIME data_criacao_notificacao
+        INTEGER dias_defasagem_abertura
+        INTEGER quantidade_candidatos
+        TEXT observacao
+        DATETIME atualizado_em
+    }
+
+    TICKET_VINCULOS_MANUAIS {
+        INTEGER ticket_solicitacao_id PK
+        INTEGER ticket_notificacao_id FK
+        TEXT justificativa
+        TEXT usuario
+        DATETIME atualizado_em
+    }
+
+    AUDIENCIAS {
+        INTEGER audiencia_id PK
+        INTEGER ticket_id UK
+        INTEGER ticket_audiencia_id
+        INTEGER ticket_relacionado_id
+        TEXT audiencia
+        DATETIME data_audiencia
+        TEXT status_ticket
+        TEXT preposto_id
+        TEXT preposto
+        TEXT local_procon
+        TEXT tipo_audiencia
+        TEXT atribuido
+        DATETIME data_reagendamento
+        TEXT arquivo_origem
+    }
+
+    GSS_ORDENS_SERVICO {
+        TEXT gss_os_id PK
+        TEXT numero_os
+        TEXT ano_os
+        TEXT matricula
+        TEXT bloco
+        DATETIME data_emissao
+        TEXT servico_executado
+        TEXT nome_cliente
+        TEXT nome_requerente
+        TEXT telefone
+        TEXT endereco_requerente
+        TEXT nome_logradouro
+        TEXT numero_porta
+        TEXT complemento
+        TEXT bairro
+        TEXT municipio
+        DATETIME data_agendamento
+        DATETIME data_impressao
+        DATETIME previsao_conclusao
+        DATETIME data_execucao
+        TEXT executor
+        DATETIME entrada_setor
+        TEXT data_pedido
+        TEXT atendente
+        TEXT solicitacao_associada
+        TEXT tipo_solicitacao_gss
+        TEXT status_os_gss
+        TEXT servico_normalizado
+        TEXT arquivo_origem
+        DATETIME data_carga
+    }
+
+    CLIENTES ||--o{ TICKETS : "possui"
+    CASES ||--o{ TICKETS : "agrupa"
+    TICKETS ||--o| AUDIENCIAS : "pode_ter"
+    TICKETS ||--o{ TICKET_ASSUNTO : "detalha_assuntos"
+    TICKETS ||--o| TICKET_RELACIONAMENTOS : "origina_solicitacao"
+    TICKETS_NOTIFICACAO ||--o{ TICKET_RELACIONAMENTOS : "vincula_notificacao"
+    TICKETS ||--o| TICKET_VINCULOS_MANUAIS : "permite_override"
+    TICKETS_NOTIFICACAO ||--o{ TICKET_VINCULOS_MANUAIS : "referencia_notificacao"
+```
+
+---
+
+## Resumo dos Relacionamentos
+
+| Origem | Destino | Cardinalidade | Descricao |
+|---|---|---|---|
+| `clientes.matricula` | `tickets.matricula` | 1:N | Um cliente pode ter muitos tickets |
+| `cases.case_id` | `tickets.case_id` | 1:N | Um case agrupa muitos tickets |
+| `tickets.ticket_id` | `audiencias.ticket_id` | 1:0..1 | Um ticket pode ter zero ou uma audiencia |
+| `tickets.ticket_id` | `ticket_assunto.ticket_id` | 1:N | Um ticket pode ter multiplos assuntos |
+| `tickets.ticket_id` | `ticket_relacionamentos.ticket_solicitacao_id` | 1:0..1 | Uma solicitacao pode ter um registro de vinculacao |
+| `tickets_notificacao.ticket_id` | `ticket_relacionamentos.ticket_notificacao_id` | 1:N | Uma notificacao pode ser vinculada a relacionamentos |
+| `tickets.ticket_id` | `ticket_vinculos_manuais.ticket_solicitacao_id` | 1:0..1 | Uma solicitacao pode ter um override manual |
+| `tickets_notificacao.ticket_id` | `ticket_vinculos_manuais.ticket_notificacao_id` | 1:N | Uma notificacao pode ser referenciada em vinculos manuais |
+
+**Tabelas sem FK formal (isoladas por design):**
+- `tickets_n1` — camada historica N1, isolada da operacao N2
+- `gss_ordens_servico` — tabela legada mantida por compatibilidade historica
+
+---
+
+[Voltar ao indice](../README.md) | [Ver descricao campo a campo](../05-esquema-banco-de-dados.md)
