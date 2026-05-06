@@ -501,6 +501,71 @@ Ou em modo automatico:
 python scripts\analytics\relatorio_executivo.py --auto
 ```
 
+## Testes Automatizados
+
+A suite de testes vive em `tests/unit/` e cobre os modulos criticos do pipeline.
+Os testes sao escritos em `unittest` puro (sem dependencia de pytest), embora
+rodem normalmente sob pytest tambem.
+
+### Cobertura atual
+
+| Arquivo | Modulo coberto | Foco |
+|---|---|---|
+| `tests/unit/test_pipeline_common.py` | `scripts/pipeline_common.py` | normalizacao de texto/identificadores, `derive_bloco`, `deduplicate_latest`, `serialize_datetime`, `first_not_null` |
+| `tests/unit/test_db_utils.py` | `scripts/db_utils.py` | allowlist de tabelas, validacao de identificadores SQL, ativacao de PRAGMAs (`foreign_keys`, `journal_mode=WAL`) |
+| `tests/unit/test_load_database.py` | `scripts/load_database.py` | UPSERT insert/update, rejeicao de tabela/coluna fora da allowlist, dataframe vazio |
+| `tests/unit/test_business_rules.py` | `scripts/business_rules.py` | overrides manuais, flag de arquivamento, regras de auditoria |
+| `tests/unit/test_contracts.py` | `scripts/contracts.py` | validacao de contratos de fonte (Zendesk, audiencias, GSS) |
+| `tests/unit/test_gss_matching.py` | `scripts/gss_matching.py` | enriquecimento e matching de OS via score |
+| `tests/unit/test_ticket_history.py` | `scripts/load_database.py` | versionamento SCD Tipo 2 do historico de tickets |
+| `tests/unit/test_ticket_linking.py` | `scripts/main_etl.py` | vinculo `NOTIFICACAO -> SOLICITACAO` |
+
+O `tests/conftest.py` injeta `scripts/` no `sys.path` automaticamente, entao
+nao e preciso instalar o projeto como pacote para rodar a suite.
+
+### Pre-requisitos
+
+```bash
+pip install pandas openpyxl xlsxwriter
+# opcional, mas recomendado:
+pip install pytest pytest-cov
+```
+
+### Como executar
+
+A partir da raiz do repositorio:
+
+```bash
+# Toda a suite com unittest (built-in, sem dependencias extras)
+python -m unittest discover -s tests/unit -p "test_*.py" -v
+
+# Apenas um arquivo
+python -m unittest tests.unit.test_pipeline_common -v
+
+# Apenas um teste
+python -m unittest tests.unit.test_db_utils.AllowlistTests.test_unknown_table_raises -v
+```
+
+Com pytest:
+
+```bash
+pytest tests/unit/                  # toda a suite
+pytest tests/unit/ -k "normalize"   # filtra por nome
+pytest tests/unit/ --cov=scripts    # com relatorio de cobertura
+```
+
+### Quando adicionar um teste
+
+Adicione um novo arquivo `tests/unit/test_<modulo>.py` quando:
+
+- introduzir uma regra de negocio nova em `business_rules.py` ou `gss_matching.py`;
+- alterar normalizacao em `pipeline_common.py` (ex.: novo formato de matricula);
+- mexer em `db_utils.py` ou `load_database.py` (qualquer mudanca em SQL ou allowlist);
+- adicionar uma nova fonte e seu contrato em `contracts.py`.
+
+Os testes devem usar SQLite `:memory:` ou `tempfile.TemporaryDirectory`
+para isolar o filesystem; nao apontar para `03_database/pre_contencioso.db`.
+
 ## Orientacoes de Conferencia
 
 Ao comparar relatorio cru versus relatorio processado do Zendesk N2:
