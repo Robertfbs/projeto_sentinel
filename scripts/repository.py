@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from db_utils import connect as _connect
+
 
 class DatabaseRepository:
     def __init__(self, db_path: str | Path):
@@ -13,7 +15,7 @@ class DatabaseRepository:
 
     def connect(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path)
+            self._conn = _connect(self.db_path)
             self._conn.row_factory = sqlite3.Row
         return self._conn
 

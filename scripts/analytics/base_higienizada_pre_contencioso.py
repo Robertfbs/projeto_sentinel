@@ -1,10 +1,17 @@
 import logging
 import sqlite3
+import sys
 import unicodedata
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
+
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from db_utils import assert_table, connect as _connect_db  # noqa: E402
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +76,7 @@ DATE_COLUMNS = {
 
 
 def build_source_sql(table_name: str) -> str:
+    safe_table = assert_table(table_name)
     return f"""
     SELECT
         date(t.data_criacao) AS data_criacao,
@@ -125,7 +133,7 @@ def build_source_sql(table_name: str) -> str:
             NULLIF(TRIM(t.protocolo_codecon), ''),
             NULLIF(TRIM(t.case_jec), '')
         ) AS protocolo_referencia
-    FROM {table_name} AS t
+    FROM {safe_table} AS t
     LEFT JOIN audiencias AS a
         ON a.ticket_id = t.ticket_id
     LEFT JOIN cases AS c
@@ -201,22 +209,16 @@ def normalize_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def auto_fit_columns(worksheet, dataframe: pd.DataFrame, date_format=None) -> None:
-    for column_index, column_name in enumerate(dataframe.columns):
-        selected = dataframe.loc[:, column_name]
-        if isinstance(selected, pd.DataFrame):
-            flattened_values = selected.fillna("").astype(str).to_numpy().ravel().tolist()
-        else:
-            flattened_values = selected.fillna("").astype(str).tolist()
+from .excel_utils import auto_fit_columns as _auto_fit_columns_shared
 
-        max_value_length = max((len(str(value)) for value in flattened_values), default=0)
-        width = min(max(len(str(column_name)), int(max_value_length)) + 2, 42)
-        worksheet.set_column(
-            column_index,
-            column_index,
-            width,
-            date_format if column_name in DATE_COLUMNS else None,
-        )
+
+def auto_fit_columns(worksheet, dataframe: pd.DataFrame, date_format=None) -> None:
+    _auto_fit_columns_shared(
+        worksheet,
+        dataframe,
+        date_columns=DATE_COLUMNS,
+        date_format=date_format,
+    )
 
 
 def write_excel(dataframe: pd.DataFrame, execution_date: date | None = None) -> Path:
@@ -286,7 +288,7 @@ def generate_base_higienizada_pre_contencioso(
     if not database_path.exists():
         raise FileNotFoundError(f"Banco de dados nao encontrado em: {database_path}")
 
-    with sqlite3.connect(database_path) as connection:
+    with _connect_db(database_path, read_only=True) as connection:
         df_solicitacao = pd.read_sql_query(build_source_sql("tickets"), connection)
         df_notificacao = pd.read_sql_query(build_source_sql("tickets_notificacao"), connection)
 

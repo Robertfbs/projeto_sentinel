@@ -62,9 +62,15 @@ SOURCE_CONTRACTS: dict[str, SourceContract] = {
         source_name="gss",
         required_columns=[
             "matricula",
+            "numero_os",
+            "data_emissao",
+            "servico_executado",
         ],
         critical_presence_groups=[
             ["matricula"],
+            ["numero_os"],
+            ["data_emissao", "data_execucao"],
+            ["servico_executado"],
         ],
     ),
 }

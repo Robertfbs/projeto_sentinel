@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
 import pandas as pd
+
+from ._db import connect as _connect_db
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -25,7 +28,12 @@ SEMANTIC_QUERIES = {
 def _read_query(conn: sqlite3.Connection, query: str) -> pd.DataFrame:
     try:
         return pd.read_sql_query(query, conn)
-    except Exception:
+    except Exception as exc:
+        logging.warning(
+            "Falha ao executar query do export semantico Power BI: %s | query=%r",
+            exc,
+            query[:120],
+        )
         return pd.DataFrame()
 
 
@@ -40,7 +48,7 @@ def generate_powerbi_semantic_exports(
     exported_files: dict[str, Path] = {}
     workbook_path = active_output_dir / "sentinel_powerbi_semantic_model.xlsx"
 
-    with sqlite3.connect(active_db_path) as conn:
+    with _connect_db(active_db_path, read_only=True) as conn:
         semantic_frames = {
             dataset_name: _read_query(conn, query)
             for dataset_name, query in SEMANTIC_QUERIES.items()

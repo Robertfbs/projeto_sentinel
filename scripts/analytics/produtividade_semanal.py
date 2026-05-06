@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from ._db import connect as _connect_db
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = PROJECT_ROOT / "03_database" / "pre_contencioso.db"
@@ -223,35 +225,21 @@ def build_report_frames(data_df: pd.DataFrame, week_start: date, week_end: date)
     }
 
 
+from .excel_utils import append_total_row as _append_total_row_shared
+from .excel_utils import auto_fit_columns as _auto_fit_columns_shared
+
+
 def append_total_row(dataframe: pd.DataFrame) -> pd.DataFrame:
-    if dataframe.empty:
-        return dataframe
-
-    numeric_columns = dataframe.select_dtypes(include=["number"]).columns.tolist()
-    if len(dataframe) <= 1 or not numeric_columns:
-        return dataframe
-
-    total_row: dict[str, object] = {}
-    label_written = False
-    for column in dataframe.columns:
-        if column in numeric_columns:
-            total_row[column] = dataframe[column].sum()
-        elif not label_written:
-            total_row[column] = "TOTAL"
-            label_written = True
-        else:
-            total_row[column] = ""
-
-    return pd.concat([dataframe, pd.DataFrame([total_row])], ignore_index=True)
+    return _append_total_row_shared(dataframe)
 
 
 def auto_fit_columns(worksheet, dataframe: pd.DataFrame, date_format=None) -> None:
-    for column_index, column_name in enumerate(dataframe.columns):
-        column_values = dataframe[column_name].fillna("").astype(str)
-        max_value_length = column_values.map(len).max() if not column_values.empty else 0
-        width = min(max(len(str(column_name)), int(max_value_length)) + 2, 42)
-        column_format = date_format if column_name in DATE_COLUMNS else None
-        worksheet.set_column(column_index, column_index, width, column_format)
+    _auto_fit_columns_shared(
+        worksheet,
+        dataframe,
+        date_columns=DATE_COLUMNS,
+        date_format=date_format,
+    )
 
 
 def write_report_excel(reports: dict[str, pd.DataFrame]) -> Path:
@@ -343,7 +331,7 @@ def generate_produtividade_semanal_report(
     if not database_path.exists():
         raise FileNotFoundError(f"Banco de dados nao encontrado em: {database_path}")
 
-    with sqlite3.connect(database_path) as connection:
+    with _connect_db(database_path, read_only=True) as connection:
         data_df, week_start, week_end = load_weekly_data(connection, reference_date)
 
     report_frames = build_report_frames(data_df, week_start, week_end)

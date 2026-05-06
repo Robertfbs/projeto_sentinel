@@ -14,9 +14,16 @@ def configure_structured_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
+_VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
 def json_log(level: str, event: dict) -> None:
     payload = json.dumps(event, ensure_ascii=False, default=str)
-    getattr(logging, level.lower(), logging.info)(payload)
+    upper = (level or "").upper()
+    log_fn = getattr(logging, level.lower(), logging.info) if upper in _VALID_LEVELS else logging.info
+    if upper not in _VALID_LEVELS:
+        logging.warning("json_log recebeu nivel desconhecido %r; usando INFO.", level)
+    log_fn(payload)
 
 
 @dataclass(frozen=True)
@@ -104,9 +111,12 @@ class StructuredLogger:
         detalhes: dict | None = None,
         nivel: str = "INFO",
     ) -> None:
+        # Captura o instante uma unica vez para evitar skew entre o JSON
+        # estruturado e o registro do banco.
+        now = datetime.now()
         event = {
             "run_id": run_id,
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "timestamp": now.isoformat(timespec="seconds"),
             "nivel": nivel,
             "etapa": etapa,
             "status": status,
@@ -125,7 +135,7 @@ class StructuredLogger:
             """,
             (
                 run_id,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                now.strftime("%Y-%m-%d %H:%M:%S"),
                 nivel,
                 etapa,
                 status,
