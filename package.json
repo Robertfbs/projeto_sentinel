@@ -1,0 +1,25 @@
+{
+  "name": "iadevt5",
+  "private": true,
+  "workspaces": ["backend", "frontend"],
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend -c blue,magenta \"bun run dev:backend\" \"bun run dev:frontend\"",
+    "dev:backend": "bun run --filter backend dev",
+    "dev:frontend": "bun run --filter frontend dev",
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
+    "test:e2e": "bunx playwright test",
+    "test:e2e:ui": "bunx playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^25.5.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "concurrently": "^9.2.1",
+    "vitest": "^4.1.0"
+  }
+}

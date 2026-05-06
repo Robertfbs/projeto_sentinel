@@ -469,8 +469,13 @@ def append_total_row(dataframe: pd.DataFrame) -> pd.DataFrame:
 
 def auto_fit_columns(worksheet, dataframe: pd.DataFrame, date_format=None) -> None:
     for column_index, column_name in enumerate(dataframe.columns):
-        column_values = dataframe[column_name].fillna("").astype(str)
-        max_value_length = column_values.map(len).max() if not column_values.empty else 0
+        selected = dataframe.loc[:, column_name]
+        if isinstance(selected, pd.DataFrame):
+            flattened_values = selected.fillna("").astype(str).to_numpy().ravel().tolist()
+        else:
+            flattened_values = selected.fillna("").astype(str).tolist()
+
+        max_value_length = max((len(str(value)) for value in flattened_values), default=0)
         width = min(max(len(str(column_name)), int(max_value_length)) + 2, 42)
         column_format = date_format if column_name in DATE_COLUMNS else None
         worksheet.set_column(column_index, column_index, width, column_format)

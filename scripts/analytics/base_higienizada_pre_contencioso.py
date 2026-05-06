@@ -203,8 +203,13 @@ def normalize_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
 
 def auto_fit_columns(worksheet, dataframe: pd.DataFrame, date_format=None) -> None:
     for column_index, column_name in enumerate(dataframe.columns):
-        column_values = dataframe[column_name].fillna("").astype(str)
-        max_value_length = column_values.map(len).max() if not column_values.empty else 0
+        selected = dataframe.loc[:, column_name]
+        if isinstance(selected, pd.DataFrame):
+            flattened_values = selected.fillna("").astype(str).to_numpy().ravel().tolist()
+        else:
+            flattened_values = selected.fillna("").astype(str).tolist()
+
+        max_value_length = max((len(str(value)) for value in flattened_values), default=0)
         width = min(max(len(str(column_name)), int(max_value_length)) + 2, 42)
         worksheet.set_column(
             column_index,

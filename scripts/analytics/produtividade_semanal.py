@@ -152,6 +152,17 @@ def load_weekly_data(
 
 def build_report_frames(data_df: pd.DataFrame, week_start: date, week_end: date) -> dict[str, pd.DataFrame]:
     df = data_df.copy()
+    if "ticket_id" not in df.columns:
+        df["ticket_id"] = pd.Series(dtype="Int64")
+    if "atribuido" not in df.columns:
+        df["atribuido"] = pd.Series(dtype="object")
+    if "canal_normalizado" not in df.columns:
+        if "tipo_solicitacao" in df.columns:
+            df["canal_normalizado"] = df["tipo_solicitacao"].apply(normalize_hierarchical_value)
+        else:
+            df["canal_normalizado"] = pd.Series(dtype="object")
+    if "dia_semana_numero" not in df.columns:
+        df["dia_semana_numero"] = pd.Series(dtype="Int64")
 
     resolvidos_total_semana = pd.DataFrame(
         [

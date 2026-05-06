@@ -57,6 +57,17 @@ GSS_ENRICHMENT_COLUMN_MAP = {
 }
 
 
+def _ensure_columns_with_defaults(
+    df: pd.DataFrame,
+    defaults: dict[str, object],
+) -> pd.DataFrame:
+    prepared = df.copy()
+    for column, default in defaults.items():
+        if column not in prepared.columns:
+            prepared[column] = default
+    return prepared
+
+
 def _join_text_parts(values: list[object]) -> str:
     return " ".join(
         str(value).strip()
@@ -105,12 +116,11 @@ def enrich_with_gss(
     if df_tickets.empty:
         return df_tickets
 
-    enriched = df_tickets.copy()
     active_column_map = column_map or GSS_ENRICHMENT_COLUMN_MAP
-
-    for target_column in active_column_map.values():
-        if target_column not in enriched.columns:
-            enriched[target_column] = None
+    enriched = _ensure_columns_with_defaults(
+        df_tickets,
+        {target_column: None for target_column in active_column_map.values()},
+    )
 
     if df_gss.empty:
         logging.warning("Base GSS nao encontrada na carga atual. Enriquecimento complementar por matricula nao executado.")
@@ -138,6 +148,19 @@ def enrich_with_gss(
             total_updates += int(fill_mask.sum())
 
     logging.info("Enriquecimento complementar via GSS concluido: %s campos preenchidos.", total_updates)
+    return enriched
+
+
+def enrich_tickets_from_gss(
+    tickets_df: pd.DataFrame,
+    gss_df: pd.DataFrame,
+    *,
+    include_os_matching: bool,
+    column_map: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    enriched = enrich_with_gss(tickets_df, gss_df, column_map=column_map)
+    if include_os_matching:
+        return enrich_tickets_with_gss(enriched, gss_df)
     return enriched
 
 
@@ -267,18 +290,18 @@ def enrich_tickets_with_gss(tickets_df: pd.DataFrame, gss_df: pd.DataFrame) -> p
     if tickets_df.empty:
         return tickets_df
 
-    enriched = tickets_df.copy()
-    for column, default in {
-        "numero_os_original": None,
-        "numero_os_gss": None,
-        "gss_os_id": None,
-        "origem_numero_os": None,
-        "status_vinculo_os": None,
-        "score_vinculo_os": None,
-        "criterio_vinculo_os": None,
-    }.items():
-        if column not in enriched.columns:
-            enriched[column] = default
+    enriched = _ensure_columns_with_defaults(
+        tickets_df,
+        {
+            "numero_os_original": None,
+            "numero_os_gss": None,
+            "gss_os_id": None,
+            "origem_numero_os": None,
+            "status_vinculo_os": None,
+            "score_vinculo_os": None,
+            "criterio_vinculo_os": None,
+        },
+    )
 
     enriched["numero_os_original"] = enriched["numero_os"].apply(normalize_identifier)
 

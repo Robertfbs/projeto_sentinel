@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "skills": {
+    "claude-api": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "ae0442705d2ce9338f91fffafa423172abfa85c7c9b85f13dece6cdc9b1681cc"
+    },
+    "cloudflare": {
+      "source": "pedronauck/skills",
+      "sourceType": "github",
+      "computedHash": "49104982a9de3b6a7718f1c34866ca2a435ec826a523f0e8e0ee97b64409de2d"
+    },
+    "skill-best-practices": {
+      "source": "pedronauck/skills",
+      "sourceType": "github",
+      "computedHash": "d53ae5bec0895e4fe802acc4a92441cfeb1cfda5ab18a10f6e96f153cb682c61"
+    }
+  }
+}

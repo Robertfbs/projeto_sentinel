@@ -1,7 +1,86 @@
-01_raw/
-02_silver/
-03_database/
-04_database/
-outputs/
+# =========================================================
+# Projeto Sentinel - Root .gitignore Consolidado
+# Escopo: consolidacao de ".gitignore" e " (2).gitignore"
+# Observacao: nao inclui o .gitignore especifico do PBIP
+# =========================================================
+
+# ---------------------------------------------------------
+# Dados operacionais e saidas do pipeline
+# ---------------------------------------------------------
+/01_raw/
+/02_silver/
+/03_database/
+/04_database/
+/outputs/
+
+# ---------------------------------------------------------
+# Python
+# ---------------------------------------------------------
 __pycache__/
-03_database/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# ---------------------------------------------------------
+# SQLite / arquivos transientes de banco
+# ---------------------------------------------------------
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite-journal
+
+# ---------------------------------------------------------
+# Excel / arquivos temporarios do Office
+# ---------------------------------------------------------
+~$*.xlsx
+~$*.xlsm
+~$*.xls
+*.tmp
+
+# ---------------------------------------------------------
+# Variaveis de ambiente
+# ---------------------------------------------------------
+.env
+.env.local
+.env.production
+.env.test
+*.local
+
+# ---------------------------------------------------------
+# Logs
+# ---------------------------------------------------------
+/logs/
+*.log
+
+# ---------------------------------------------------------
+# Tooling auxiliar ja presente no repositorio
+# Mantido para nao perder regras existentes
+# ---------------------------------------------------------
+/node_modules/
+/dist/
+/dist-ssr/
+*.tsbuildinfo
+/coverage/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# ---------------------------------------------------------
+# IDEs / sistema operacional
+# ---------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

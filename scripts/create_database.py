@@ -106,6 +106,9 @@ def setup_database() -> None:
         criterio_vinculo TEXT,
         confianca_vinculo REAL,
         status_vinculo TEXT,
+        data_inicio_vigencia DATETIME,
+        data_fim_vigencia DATETIME,
+        flag_ativo INTEGER DEFAULT 1,
         FOREIGN KEY (case_id) REFERENCES cases(case_id),
         FOREIGN KEY (matricula) REFERENCES clientes(matricula)
     );
@@ -244,6 +247,79 @@ def setup_database() -> None:
         FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
     );
 
+    CREATE TABLE IF NOT EXISTS tickets_auditoria_operacional (
+        auditoria_operacional_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        auditoria_operacional_key TEXT,
+        ticket_id INTEGER,
+        origem_regra TEXT,
+        tipo_inconsistencia TEXT,
+        descricao_inconsistencia TEXT,
+        status_validacao TEXT,
+        data_identificacao DATETIME,
+        data_validacao DATETIME,
+        validado_por TEXT,
+        acao_tomada TEXT,
+        observacao TEXT,
+        FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS etl_runs (
+        run_id TEXT PRIMARY KEY,
+        pipeline_name TEXT,
+        data_execucao DATETIME,
+        status TEXT,
+        tempo_execucao REAL,
+        qtd_registros_processados INTEGER,
+        erro TEXT,
+        qtd_arquivos_lidos INTEGER,
+        qtd_fontes_processadas INTEGER,
+        data_inicio DATETIME,
+        data_fim DATETIME
+    );
+
+    CREATE TABLE IF NOT EXISTS etl_logs (
+        log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT,
+        timestamp_log DATETIME,
+        nivel TEXT,
+        etapa TEXT,
+        status TEXT,
+        volume_processado INTEGER,
+        tempo_etapa REAL,
+        erro TEXT,
+        payload_json TEXT,
+        FOREIGN KEY (run_id) REFERENCES etl_runs(run_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS tickets_historico (
+        ticket_hist_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id INTEGER NOT NULL,
+        case_id TEXT,
+        matricula TEXT,
+        numero_os TEXT,
+        status TEXT,
+        atribuido TEXT,
+        titulo TEXT,
+        assunto TEXT,
+        tipo_solicitacao TEXT,
+        tipo_manifestacao TEXT,
+        resultado_tratativa TEXT,
+        grupo_tickets TEXT,
+        flag_arquivado_relatorio INTEGER,
+        ticket_notificacao_id INTEGER,
+        status_vinculo TEXT,
+        data_criacao DATETIME,
+        data_resolucao DATETIME,
+        data_inicio_vigencia DATETIME,
+        data_fim_vigencia DATETIME,
+        flag_ativo INTEGER DEFAULT 1,
+        run_id TEXT,
+        hash_dados TEXT NOT NULL,
+        payload_json TEXT,
+        FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id),
+        FOREIGN KEY (run_id) REFERENCES etl_runs(run_id)
+    );
+
     CREATE TABLE IF NOT EXISTS audiencias (
         audiencia_id INTEGER PRIMARY KEY AUTOINCREMENT,
         ticket_id INTEGER UNIQUE,
@@ -321,6 +397,170 @@ def setup_database() -> None:
 
     CREATE INDEX IF NOT EXISTS idx_tickets_auditoria_classificacao_status
         ON tickets_auditoria_classificacao (status_auditoria, origem_regra);
+
+    CREATE INDEX IF NOT EXISTS idx_etl_runs_status_data
+        ON etl_runs (status, data_execucao);
+
+    CREATE INDEX IF NOT EXISTS idx_etl_logs_run_etapa
+        ON etl_logs (run_id, etapa, timestamp_log);
+
+    CREATE INDEX IF NOT EXISTS idx_tickets_historico_ticket_ativo
+        ON tickets_historico (ticket_id, flag_ativo, data_inicio_vigencia);
+
+    CREATE INDEX IF NOT EXISTS idx_tickets_historico_hash
+        ON tickets_historico (ticket_id, hash_dados);
+
+    CREATE INDEX IF NOT EXISTS idx_tickets_auditoria_operacional_status
+        ON tickets_auditoria_operacional (status_validacao, tipo_inconsistencia);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_auditoria_operacional_key
+        ON tickets_auditoria_operacional (auditoria_operacional_key);
+    """
+
+    view_script = """
+    CREATE VIEW IF NOT EXISTS vw_tickets_ativos AS
+    SELECT *
+    FROM tickets
+    WHERE COALESCE(flag_ativo, 1) = 1;
+
+    CREATE VIEW IF NOT EXISTS fato_tickets AS
+    SELECT
+        ticket_id,
+        case_id,
+        matricula,
+        bloco,
+        numero_os,
+        data_criacao,
+        data_resolucao,
+        status,
+        atribuido,
+        titulo,
+        assunto,
+        tipo_solicitacao,
+        tipo_manifestacao,
+        resultado_tratativa,
+        grupo_tickets,
+        canal_origem,
+        classificacao_solicitacoes,
+        classificacao_notificacoes,
+        flag_arquivado_relatorio,
+        flag_auditoria_classificacao,
+        qtde_assuntos_ticket,
+        flag_multiplos_assuntos,
+        ticket_notificacao_id,
+        status_vinculo,
+        data_inicio_vigencia,
+        data_fim_vigencia,
+        flag_ativo
+    FROM vw_tickets_ativos
+    WHERE COALESCE(flag_arquivado_relatorio, 0) = 0;
+
+    CREATE VIEW IF NOT EXISTS fato_audiencias AS
+    SELECT
+        a.ticket_id,
+        a.ticket_audiencia_id,
+        a.ticket_relacionado_id,
+        a.audiencia,
+        a.data_audiencia,
+        a.status_ticket,
+        a.preposto_id,
+        a.preposto,
+        a.local_procon,
+        a.tipo_audiencia,
+        a.atribuido,
+        a.data_reagendamento
+    FROM audiencias a
+    LEFT JOIN vw_tickets_ativos t
+        ON t.ticket_id = a.ticket_id
+    WHERE t.ticket_id IS NULL OR COALESCE(t.flag_arquivado_relatorio, 0) = 0;
+
+    CREATE VIEW IF NOT EXISTS dim_tempo AS
+    WITH datas AS (
+        SELECT date(data_criacao) AS data_calendario FROM tickets WHERE data_criacao IS NOT NULL
+        UNION
+        SELECT date(data_resolucao) AS data_calendario FROM tickets WHERE data_resolucao IS NOT NULL
+        UNION
+        SELECT date(data_audiencia) AS data_calendario FROM audiencias WHERE data_audiencia IS NOT NULL
+        UNION
+        SELECT date(data_reagendamento) AS data_calendario FROM audiencias WHERE data_reagendamento IS NOT NULL
+    )
+    SELECT
+        replace(data_calendario, '-', '') AS data_key,
+        data_calendario,
+        CAST(strftime('%Y', data_calendario) AS INTEGER) AS ano,
+        CAST(strftime('%m', data_calendario) AS INTEGER) AS mes,
+        CAST(strftime('%d', data_calendario) AS INTEGER) AS dia,
+        printf('%s-%s', strftime('%Y', data_calendario), strftime('%m', data_calendario)) AS ano_mes,
+        ((CAST(strftime('%m', data_calendario) AS INTEGER) - 1) / 3) + 1 AS trimestre,
+        CASE strftime('%m', data_calendario)
+            WHEN '01' THEN 'Janeiro'
+            WHEN '02' THEN 'Fevereiro'
+            WHEN '03' THEN 'Marco'
+            WHEN '04' THEN 'Abril'
+            WHEN '05' THEN 'Maio'
+            WHEN '06' THEN 'Junho'
+            WHEN '07' THEN 'Julho'
+            WHEN '08' THEN 'Agosto'
+            WHEN '09' THEN 'Setembro'
+            WHEN '10' THEN 'Outubro'
+            WHEN '11' THEN 'Novembro'
+            WHEN '12' THEN 'Dezembro'
+        END AS nome_mes,
+        CAST(strftime('%w', data_calendario) AS INTEGER) AS dia_semana_num
+    FROM datas
+    WHERE data_calendario IS NOT NULL;
+
+    CREATE VIEW IF NOT EXISTS dim_canal AS
+    SELECT DISTINCT
+        COALESCE(tipo_solicitacao, 'NAO_INFORMADO') AS canal_key,
+        COALESCE(tipo_solicitacao, 'NAO_INFORMADO') AS canal
+    FROM fato_tickets;
+
+    CREATE VIEW IF NOT EXISTS dim_status AS
+    SELECT DISTINCT
+        COALESCE(status, 'NAO_INFORMADO') AS status_key,
+        COALESCE(status, 'NAO_INFORMADO') AS status
+    FROM fato_tickets;
+
+    CREATE VIEW IF NOT EXISTS dim_atribuido AS
+    SELECT DISTINCT
+        COALESCE(atribuido, 'NAO_ATRIBUIDO') AS atribuido_key,
+        COALESCE(atribuido, 'NAO_ATRIBUIDO') AS atribuido
+    FROM fato_tickets;
+
+    CREATE VIEW IF NOT EXISTS dim_assunto AS
+    SELECT DISTINCT
+        COALESCE(assunto_normalizado, 'SEM_ASSUNTO') AS assunto_key,
+        COALESCE(assunto_normalizado, 'SEM_ASSUNTO') AS assunto_normalizado
+    FROM ticket_assunto;
+
+    CREATE VIEW IF NOT EXISTS gold_ai_ready AS
+    SELECT
+        ticket_id,
+        case_id,
+        matricula,
+        bloco,
+        data_criacao,
+        data_resolucao,
+        status,
+        atribuido,
+        COALESCE(titulo, '') AS titulo,
+        COALESCE(assunto, '') AS assunto,
+        COALESCE(tipo_solicitacao, '') AS canal_semantico,
+        COALESCE(tipo_manifestacao, '') AS tipo_manifestacao,
+        COALESCE(resultado_tratativa, '') AS resultado_tratativa,
+        COALESCE(classificacao_solicitacoes, '') AS classificacao_solicitacoes,
+        COALESCE(classificacao_notificacoes, '') AS classificacao_notificacoes,
+        COALESCE(grupo_tickets, '') AS grupo_tickets,
+        COALESCE(municipio, '') AS municipio,
+        COALESCE(bairro, '') AS bairro,
+        COALESCE(endereco, '') AS endereco,
+        COALESCE(flag_auditoria_classificacao, 0) AS flag_auditoria_classificacao
+    FROM vw_tickets_ativos
+    WHERE COALESCE(flag_arquivado_relatorio, 0) = 0;
+
+    CREATE INDEX IF NOT EXISTS idx_tickets_flag_ativo
+        ON tickets (flag_ativo, data_inicio_vigencia);
     """
 
     ticket_columns = [
@@ -380,6 +620,9 @@ def setup_database() -> None:
         "criterio_vinculo TEXT",
         "confianca_vinculo REAL",
         "status_vinculo TEXT",
+        "data_inicio_vigencia DATETIME",
+        "data_fim_vigencia DATETIME",
+        "flag_ativo INTEGER DEFAULT 1",
     ]
 
     tickets_notificacao_columns = [
@@ -430,6 +673,10 @@ def setup_database() -> None:
         "bloco TEXT",
     ]
 
+    tickets_auditoria_operacional_columns = [
+        "auditoria_operacional_key TEXT",
+    ]
+
     try:
         cursor.executescript(sql_script)
 
@@ -443,7 +690,10 @@ def setup_database() -> None:
             _add_column_if_missing(cursor, "tickets_n1", column_sql)
         for column_sql in gss_columns:
             _add_column_if_missing(cursor, "gss_ordens_servico", column_sql)
+        for column_sql in tickets_auditoria_operacional_columns:
+            _add_column_if_missing(cursor, "tickets_auditoria_operacional", column_sql)
 
+        cursor.executescript(view_script)
         conn.commit()
         logging.info("Banco de dados inicializado/atualizado com sucesso em: %s", DB_PATH)
     except Exception as exc:
