@@ -274,9 +274,10 @@ def apply_classification_audit_rules(df: pd.DataFrame) -> pd.DataFrame:
         "canal_normalizado_auditoria": None,
         "observacao_auditoria_classificacao": None,
     }
+    # Inicializa as colunas de auditoria sempre (sobrescreve valores anteriores
+    # de uma execucao previa), garantindo idempotencia da regra.
     for column, default in required_audit_columns.items():
-        if column not in frame.columns:
-            frame[column] = default
+        frame[column] = default
 
     ticket_ids = pd.to_numeric(frame["ticket_id"], errors="coerce")
     specific_exception_mask = ticket_ids.isin(CLASSIFICATION_AUDIT_EXCEPTION_TICKETS)
@@ -291,24 +292,15 @@ def apply_classification_audit_rules(df: pd.DataFrame) -> pd.DataFrame:
     automatic_audit_mask = governance_channel_mask & unexpected_group_mask & ~specific_exception_mask & active_metric_mask
     audit_mask = specific_exception_mask | automatic_audit_mask
 
-    frame.loc[:, "flag_auditoria_classificacao"] = 0
-    frame.loc[:, "motivo_auditoria_classificacao"] = None
-    frame.loc[:, "status_auditoria_classificacao"] = None
-    frame.loc[:, "grupo_sugerido_auditoria"] = None
-    frame.loc[:, "tipo_solicitacao_original_auditoria"] = None
-    frame.loc[:, "data_auditoria_classificacao"] = None
-    frame.loc[:, "origem_regra_auditoria"] = None
-    frame.loc[:, "canal_normalizado_auditoria"] = None
-    frame.loc[:, "observacao_auditoria_classificacao"] = None
-
     if not audit_mask.any():
         return frame
 
+    audit_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     original_tipo_solicitacao = frame.loc[audit_mask, "tipo_solicitacao"].copy()
     frame.loc[audit_mask, "flag_auditoria_classificacao"] = 1
     frame.loc[audit_mask, "flag_arquivado_relatorio"] = 1
     frame.loc[audit_mask, "status_auditoria_classificacao"] = "PENDENTE_VALIDACAO"
-    frame.loc[audit_mask, "data_auditoria_classificacao"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    frame.loc[audit_mask, "data_auditoria_classificacao"] = audit_timestamp
     frame.loc[audit_mask, "tipo_solicitacao_original_auditoria"] = original_tipo_solicitacao
     frame.loc[audit_mask, "canal_normalizado_auditoria"] = original_tipo_solicitacao.apply(normalize_classification_value)
 
@@ -370,15 +362,17 @@ def build_operational_audit_records(df: pd.DataFrame) -> pd.DataFrame:
     audit_df = df[pd.to_numeric(df["flag_auditoria_classificacao"], errors="coerce").fillna(0).astype(int) == 1].copy()
     if audit_df.empty:
         return pd.DataFrame()
+    _key_series = (
+        audit_df["ticket_id"].astype("Int64").astype(str)
+        + "|"
+        + audit_df["origem_regra_auditoria"].astype(str)
+        + "|"
+        + audit_df["motivo_auditoria_classificacao"].astype(str)
+    )
     return pd.DataFrame(
         {
-            "auditoria_operacional_key": audit_df.apply(
-                lambda row: hashlib.md5(
-                    f"{int(row['ticket_id'])}|{row['origem_regra_auditoria']}|{row['motivo_auditoria_classificacao']}".encode(
-                        "utf-8"
-                    )
-                ).hexdigest(),
-                axis=1,
+            "auditoria_operacional_key": _key_series.map(
+                lambda s: hashlib.sha256(s.encode("utf-8")).hexdigest()
             ),
             "ticket_id": audit_df["ticket_id"],
             "origem_regra": audit_df["origem_regra_auditoria"].fillna("AUDITORIA_CLASSIFICACAO"),

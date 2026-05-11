@@ -25,6 +25,7 @@ from business_rules import (
 )
 from contracts import ContractValidationError, DataContractValidator
 from create_database import setup_database
+from db_utils import assert_table, connect as connect_db
 from gss_matching import (
     enrich_tickets_from_gss,
     filter_raw_gss_for_ticket_enrichment,
@@ -288,9 +289,10 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         .str.strip()
         .replace({"": pd.NA, "<NA>": pd.NA, "nan": pd.NA, "None": pd.NA})
     )
-    df["tipo_solicitacao"] = df.apply(
-        lambda row: first_not_null(row, ["tipo_solicitacao", "classificacao_solicitacoes", "canais_de_atrito"]),
-        axis=1,
+    df["tipo_solicitacao"] = (
+        df["tipo_solicitacao"]
+        .combine_first(df.get("classificacao_solicitacoes"))
+        .combine_first(df.get("canais_de_atrito"))
     )
 
     df["flag_arquivado_relatorio"] = br_build_archive_flag(df)
@@ -303,26 +305,15 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
     df = br_apply_ticket_manual_overrides(df, ticket_kind)
 
     if "titulo" in df.columns:
-        df["protocolo_agenersa"] = df["titulo"].apply(
-            lambda value: re.search(r"\d{10}", str(value)).group()
-            if pd.notnull(value) and re.search(r"\d{10}", str(value))
-            else None
+        # Vetorizado via .str.extract: regex compilada uma unica vez pelo pandas;
+        # NaN e ausencia de match retornam NaN automaticamente.
+        _titulo = df["titulo"].astype("string")
+        df["protocolo_agenersa"] = _titulo.str.extract(r"(\d{10})", expand=False)
+        df["protocolo_procon"] = _titulo.str.extract(
+            r"(\d{2}\.\d{2}\.\d{4}\.\d{3}\.\d{5}-\d{3})", expand=False
         )
-        df["protocolo_procon"] = df["titulo"].apply(
-            lambda value: re.search(r"\d{2}\.\d{2}\.\d{4}\.\d{3}\.\d{5}-\d{3}", str(value)).group()
-            if pd.notnull(value) and re.search(r"\d{2}\.\d{2}\.\d{4}\.\d{3}\.\d{5}-\d{3}", str(value))
-            else None
-        )
-        df["protocolo_defensoria"] = df["titulo"].apply(
-            lambda value: re.search(r"[Vv]\d{2,5}/\d{4}", str(value)).group()
-            if pd.notnull(value) and re.search(r"[Vv]\d{2,5}/\d{4}", str(value))
-            else None
-        )
-        df["protocolo_codecon"] = df["titulo"].apply(
-            lambda value: re.search(r"\d{4,6}/\d{4}", str(value)).group()
-            if pd.notnull(value) and re.search(r"\d{4,6}/\d{4}", str(value))
-            else None
-        )
+        df["protocolo_defensoria"] = _titulo.str.extract(r"([Vv]\d{2,5}/\d{4})", expand=False)
+        df["protocolo_codecon"] = _titulo.str.extract(r"(\d{4,6}/\d{4})", expand=False)
     else:
         df["protocolo_agenersa"] = None
         df["protocolo_procon"] = None
@@ -341,15 +332,23 @@ def transform_data(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
         cpf = str(row.get("cpf_cliente", "")).strip()
         matricula = str(row.get("matricula", "")).strip()
         assunto = str(row.get("assunto", "")).strip().lower()
+        # Sem identificacao minima do caso, agrupar por hash zerado mascara
+        # processos JEC distintos. Preferimos nao gerar chave a colidir.
+        if not cpf and not matricula:
+            return None
         texto_base = f"{cpf}|{matricula}|{assunto}".encode("utf-8")
-        return hashlib.md5(texto_base).hexdigest()
+        return hashlib.sha256(texto_base).hexdigest()
 
     df["case_jec"] = df.apply(gerar_case_jec, axis=1)
 
-    df["assunto_normalizado"] = df.apply(
-        lambda row: normalize_subject(first_not_null(row, ["assunto", "titulo"])),
-        axis=1,
+    _assunto_or_titulo = (
+        df.get("assunto")
+        if "assunto" in df.columns
+        else pd.Series([None] * len(df), index=df.index)
     )
+    if "titulo" in df.columns:
+        _assunto_or_titulo = _assunto_or_titulo.combine_first(df["titulo"])
+    df["assunto_normalizado"] = _assunto_or_titulo.map(normalize_subject)
     df["protocolo_referencia"] = df.apply(
         lambda row: first_not_null(
             row,
@@ -545,11 +544,14 @@ def build_ticket_assunto(df: pd.DataFrame) -> pd.DataFrame:
     ).copy()
     frame["ordem_assunto"] = frame.groupby("ticket_id").cumcount() + 1
     frame["flag_assunto_principal"] = (frame["ordem_assunto"] == 1).astype(int)
-    frame["ticket_assunto_id"] = frame.apply(
-        lambda row: hashlib.md5(
-            f"{int(row['ticket_id'])}|{row['assunto_normalizado_item']}".encode("utf-8")
-        ).hexdigest(),
-        axis=1,
+    # Vetorizado: concatena chaves em uma Series e aplica SHA-256 elemento a elemento.
+    _frame_keys = (
+        frame["ticket_id"].astype("Int64").astype(str)
+        + "|"
+        + frame["assunto_normalizado_item"].astype(str)
+    )
+    frame["ticket_assunto_id"] = _frame_keys.map(
+        lambda s: hashlib.sha256(s.encode("utf-8")).hexdigest()
     )
     frame["assunto_normalizado"] = frame["assunto_normalizado_item"]
 
@@ -630,6 +632,15 @@ def filter_candidates_by_window(
     return notifications_df.loc[filtro].copy()
 
 
+_MANUAL_LINKS_EMPTY_COLUMNS = [
+    "ticket_solicitacao_id",
+    "ticket_notificacao_id",
+    "justificativa",
+    "usuario",
+    "atualizado_em",
+]
+
+
 def load_manual_links(conn: sqlite3.Connection) -> pd.DataFrame:
     try:
         manual_df = pd.read_sql_query(
@@ -639,26 +650,26 @@ def load_manual_links(conn: sqlite3.Connection) -> pd.DataFrame:
             """,
             conn,
         )
-        if manual_df.empty:
-            return manual_df
-
-        manual_df["ticket_solicitacao_id"] = pd.to_numeric(
-            manual_df["ticket_solicitacao_id"], errors="coerce"
-        ).astype("Int64")
-        manual_df["ticket_notificacao_id"] = pd.to_numeric(
-            manual_df["ticket_notificacao_id"], errors="coerce"
-        ).astype("Int64")
-        return manual_df.dropna(subset=["ticket_solicitacao_id", "ticket_notificacao_id"]).copy()
+    except sqlite3.OperationalError:
+        # Tabela ainda nao existe (primeira execucao apos schema change).
+        return pd.DataFrame(columns=_MANUAL_LINKS_EMPTY_COLUMNS)
     except Exception:
-        return pd.DataFrame(
-            columns=[
-                "ticket_solicitacao_id",
-                "ticket_notificacao_id",
-                "justificativa",
-                "usuario",
-                "atualizado_em",
-            ]
+        # Qualquer outro erro eh anormal: logar e nao mascarar a falha.
+        logging.exception(
+            "Falha ao ler ticket_vinculos_manuais; vinculos manuais serao ignorados nesta execucao."
         )
+        return pd.DataFrame(columns=_MANUAL_LINKS_EMPTY_COLUMNS)
+
+    if manual_df.empty:
+        return manual_df
+
+    manual_df["ticket_solicitacao_id"] = pd.to_numeric(
+        manual_df["ticket_solicitacao_id"], errors="coerce"
+    ).astype("Int64")
+    manual_df["ticket_notificacao_id"] = pd.to_numeric(
+        manual_df["ticket_notificacao_id"], errors="coerce"
+    ).astype("Int64")
+    return manual_df.dropna(subset=["ticket_solicitacao_id", "ticket_notificacao_id"]).copy()
 
 
 def build_relationship_record(
@@ -835,9 +846,10 @@ def prepare_for_sqlite(df: pd.DataFrame, datetime_columns: list[str]) -> pd.Data
 def backfill_bloco(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
     for table_name in ["tickets", "tickets_notificacao", "tickets_n1"]:
+        safe_table = assert_table(table_name)
         cursor.execute(
             f"""
-            UPDATE {table_name}
+            UPDATE {safe_table}
             SET bloco = CASE
                 WHEN COALESCE(TRIM(matricula), '') LIKE '40%' THEN 'Bloco 4'
                 WHEN COALESCE(TRIM(matricula), '') LIKE '10%' THEN 'Bloco 1'
@@ -964,6 +976,20 @@ def process_and_load() -> None:
             transform_timer = StepTimer()
             df_solicitacao = transform_data(df_raw_geral, "solicitacao")
             df_notificacao = transform_data(df_raw_geral, "notificacao")
+            # Solicitacao e notificacao sao derivadas do mesmo dataset filtrando
+            # por `formulario_ticket`. Se a fonte mudar nomenclatura ou vier
+            # com valores inesperados, o filtro pode permitir que um mesmo
+            # ticket_id apareca em ambos os DataFrames, corrompendo o vinculo.
+            if not df_solicitacao.empty and not df_notificacao.empty:
+                _sol_ids = set(pd.to_numeric(df_solicitacao["ticket_id"], errors="coerce").dropna().astype(int))
+                _not_ids = set(pd.to_numeric(df_notificacao["ticket_id"], errors="coerce").dropna().astype(int))
+                _overlap = _sol_ids & _not_ids
+                if _overlap:
+                    raise RuntimeError(
+                        f"Particao solicitacao/notificacao nao disjunta: "
+                        f"{len(_overlap)} ticket_id(s) em ambas as classes "
+                        f"(amostra: {sorted(list(_overlap))[:5]})."
+                    )
             df_n1 = transform_n1_data(df_raw_n1)
             df_audiencias = transform_audiencias_data(df_raw_audiencias)
             df_ticket_assunto = build_ticket_assunto(df_solicitacao)
@@ -1007,8 +1033,12 @@ def process_and_load() -> None:
                 tempo_etapa=gss_timer.elapsed(),
             )
 
-            with sqlite3.connect(DB_PATH) as conn:
-                manual_links_df = load_manual_links(conn)
+            # Uma unica conexao mantida ate o fim da fase de persistencia para
+            # eliminar a janela entre a leitura de ticket_vinculos_manuais e a
+            # gravacao Gold (corrige race condition entre execucoes paralelas).
+            persistence_conn: sqlite3.Connection | None = connect_db(DB_PATH)
+            persistence_conn.execute("BEGIN IMMEDIATE")
+            manual_links_df = load_manual_links(persistence_conn)
 
             relationship_timer = StepTimer()
             relationships_df = build_ticket_relationships(
@@ -1084,7 +1114,11 @@ def process_and_load() -> None:
             )
 
             persistence_timer = StepTimer()
-            with sqlite3.connect(DB_PATH) as conn:
+            # Reaproveita a conexao com BEGIN IMMEDIATE aberta no inicio do
+            # match para garantir consistencia entre manual_links lidos e a
+            # escrita Gold (mesma transacao). O `with ... as conn` adapta o
+            # controle de commit/rollback ao restante do bloco existente.
+            with persistence_conn as conn:
                 df_clientes_base = pd.concat(
                     [
                         df_solicitacao[["matricula"]] if "matricula" in df_solicitacao.columns else pd.DataFrame(),
@@ -1281,9 +1315,17 @@ def process_and_load() -> None:
                         df_tickets["confianca_vinculo"] = None
                         df_tickets["status_vinculo"] = "NOTIFICACAO_NAO_CARREGADA"
 
-                    df_tickets["ticket_solicitacao_id"] = df_tickets["ticket_id"]
+                    # Preservamos o valor vindo do merge com relationships_df e
+                    # apenas preenchemos NaN com o proprio ticket_id (caso de
+                    # ticket sem vinculo a notificacao).
+                    if "ticket_solicitacao_id" in df_tickets.columns:
+                        df_tickets["ticket_solicitacao_id"] = df_tickets[
+                            "ticket_solicitacao_id"
+                        ].fillna(df_tickets["ticket_id"])
+                    else:
+                        df_tickets["ticket_solicitacao_id"] = df_tickets["ticket_id"]
 
-                    if "data_criacao_solicitacao" not in df_tickets or df_tickets["data_criacao_solicitacao"].isna().all():
+                    if "data_criacao_solicitacao" not in df_tickets.columns or df_tickets["data_criacao_solicitacao"].isna().all():
                         df_tickets["data_criacao_solicitacao"] = df_tickets["data_criacao"]
                     else:
                         df_tickets["data_criacao_solicitacao"] = df_tickets["data_criacao_solicitacao"].fillna(
@@ -1428,9 +1470,23 @@ def process_and_load() -> None:
 
             analytics_timer = StepTimer()
             optional_output_failures: list[str] = []
-            generate_daily_pre_contencioso_report(DB_PATH)
-            generate_produtividade_semanal_report(DB_PATH)
-            generate_base_higienizada_pre_contencioso(DB_PATH)
+
+            def _safe_run_report(name: str, fn) -> None:
+                try:
+                    fn(DB_PATH)
+                except Exception as exc:
+                    optional_output_failures.append(f"{name}: {exc}")
+                    step_logger.log_step(
+                        run_id,
+                        etapa=f"generate_{name}",
+                        status="FAILED",
+                        erro=str(exc),
+                        nivel="WARNING",
+                    )
+
+            _safe_run_report("daily_pre_contencioso", generate_daily_pre_contencioso_report)
+            _safe_run_report("produtividade_semanal", generate_produtividade_semanal_report)
+            _safe_run_report("base_higienizada_pre_contencioso", generate_base_higienizada_pre_contencioso)
             try:
                 generate_powerbi_semantic_exports(DB_PATH)
             except Exception as exc:

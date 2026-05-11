@@ -21,7 +21,7 @@ FROM audiencias AS a
 INNER JOIN tickets AS t
     ON t.ticket_id = a.ticket_id
 WHERE
-    date(a.data_audiencia) >= date('now', 'localtime')
+    (a.data_audiencia IS NOT NULL AND date(a.data_audiencia) >= date('now', 'localtime'))
     OR UPPER(TRIM(COALESCE(t.status, ''))) NOT IN ('RESOLVIDO', 'FECHADO', 'RESOLVIDO/FECHADO');
 
 

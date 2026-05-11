@@ -2,17 +2,17 @@ OPEN_AUDIENCES_SQL = """
 SELECT
     :start_date AS periodo_inicial,
     :end_date AS periodo_final,
-    date('now', 'localtime') AS data_referencia,
+    date(COALESCE(:reference_date, 'now', 'localtime')) AS data_referencia,
     COUNT(
         DISTINCT CASE
-            WHEN date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date('now', 'localtime')
+            WHEN date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date(COALESCE(:reference_date, 'now', 'localtime'))
                  OR UPPER(TRIM(COALESCE(t.status, ''))) IN ('OPEN', 'HOLD', 'PENDING', 'NEW')
             THEN a.audiencia_id
         END
     ) AS qtde_audiencias_em_aberto,
     COUNT(
         DISTINCT CASE
-            WHEN date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date('now', 'localtime')
+            WHEN date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date(COALESCE(:reference_date, 'now', 'localtime'))
             THEN a.audiencia_id
         END
     ) AS qtde_audiencias_somente_data_futura,
@@ -287,7 +287,7 @@ DATA_SQL = """
 SELECT
     :start_date AS periodo_inicial_param,
     :end_date AS periodo_final_param,
-    date('now', 'localtime') AS data_referencia_execucao,
+    date(COALESCE(:reference_date, 'now', 'localtime')) AS data_referencia_execucao,
     t.ticket_id,
     t.case_id,
     t.matricula,
@@ -351,7 +351,7 @@ SELECT
         THEN 1 ELSE 0
     END AS flag_tem_audiencia,
     CASE
-        WHEN date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date('now', 'localtime')
+        WHEN date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date(COALESCE(:reference_date, 'now', 'localtime'))
         THEN 1 ELSE 0
     END AS flag_audiencia_futura_ou_hoje,
     CASE
@@ -361,14 +361,14 @@ SELECT
     CASE
         WHEN a.audiencia_id IS NOT NULL
              AND (
-                 date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date('now', 'localtime')
+                 date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date(COALESCE(:reference_date, 'now', 'localtime'))
                  OR UPPER(TRIM(COALESCE(t.status, ''))) IN ('OPEN', 'HOLD', 'PENDING', 'NEW')
              )
         THEN 1 ELSE 0
     END AS flag_audiencia_em_aberto_regra_atual,
     CASE
         WHEN a.audiencia_id IS NOT NULL
-             AND date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date('now', 'localtime')
+             AND date(COALESCE(a.data_reagendamento, a.data_audiencia)) >= date(COALESCE(:reference_date, 'now', 'localtime'))
         THEN 1 ELSE 0
     END AS flag_audiencia_em_aberto_data_futura,
     CASE

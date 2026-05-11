@@ -2,6 +2,8 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from db_utils import assert_table, connect as connect_db
+
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -11,16 +13,24 @@ DB_PATH = BASE_DIR / "03_database" / "pre_contencioso.db"
 
 
 def _add_column_if_missing(cursor: sqlite3.Cursor, table_name: str, column_sql: str) -> None:
+    """Adiciona coluna se ainda nao existir.
+
+    Filtra apenas o erro especifico "duplicate column name"; qualquer outro
+    OperationalError (tabela inexistente, sintaxe invalida, DB corrompido)
+    eh propagado para nao mascarar problemas de schema.
+    """
+    safe_table = assert_table(table_name)
     try:
-        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
-    except sqlite3.OperationalError:
-        pass
+        cursor.execute(f"ALTER TABLE {safe_table} ADD COLUMN {column_sql}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
 
 
 def setup_database() -> None:
     DB_PATH.parent.mkdir(exist_ok=True)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db(DB_PATH)
     cursor = conn.cursor()
 
     sql_script = """
@@ -374,6 +384,15 @@ def setup_database() -> None:
     CREATE INDEX IF NOT EXISTS idx_tickets_matricula_os
         ON tickets (matricula, numero_os, data_criacao);
 
+    CREATE INDEX IF NOT EXISTS idx_tickets_status_resolucao
+        ON tickets (status, data_resolucao);
+
+    CREATE INDEX IF NOT EXISTS idx_tickets_tipo_solicitacao
+        ON tickets (tipo_solicitacao);
+
+    CREATE INDEX IF NOT EXISTS idx_audiencias_data
+        ON audiencias (data_audiencia, data_reagendamento);
+
     CREATE INDEX IF NOT EXISTS idx_tickets_notificacao_matricula_os
         ON tickets_notificacao (matricula, numero_os, data_criacao);
 
@@ -697,6 +716,10 @@ def setup_database() -> None:
         conn.commit()
         logging.info("Banco de dados inicializado/atualizado com sucesso em: %s", DB_PATH)
     except Exception as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
         logging.error("Erro ao criar/atualizar banco de dados: %s", exc)
         raise
     finally:

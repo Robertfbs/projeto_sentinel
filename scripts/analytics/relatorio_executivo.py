@@ -8,8 +8,10 @@ import pandas as pd
 
 try:
     from .queries import REPORT_QUERIES
+    from ._db import connect as _connect_db
 except ImportError:
     from queries import REPORT_QUERIES
+    from _db import connect as _connect_db
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -115,6 +117,9 @@ def load_reports(
     params = {
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d"),
+        # Permite reproduzir relatorios para uma data passada; quando None,
+        # COALESCE no SQL recai para 'now'/'localtime'.
+        "reference_date": end_date.strftime("%Y-%m-%d"),
     }
 
     reports: dict[str, pd.DataFrame] = {}
@@ -161,34 +166,20 @@ def sort_report_frames(reports: dict[str, pd.DataFrame]) -> dict[str, pd.DataFra
     return sorted_reports
 
 
+try:
+    from .excel_utils import append_total_row as _append_total_row_shared
+    from .excel_utils import auto_fit_columns as _auto_fit_columns_shared
+except ImportError:
+    from excel_utils import append_total_row as _append_total_row_shared  # type: ignore[no-redef]
+    from excel_utils import auto_fit_columns as _auto_fit_columns_shared  # type: ignore[no-redef]
+
+
 def append_total_row(dataframe: pd.DataFrame) -> pd.DataFrame:
-    df = dataframe.copy()
-    numeric_columns = df.select_dtypes(include=["number"]).columns.tolist()
-
-    if df.empty or len(df) <= 1 or not numeric_columns:
-        return df
-
-    total_row: dict[str, object] = {}
-    label_written = False
-
-    for column in df.columns:
-        if column in numeric_columns:
-            total_row[column] = df[column].sum()
-        elif not label_written:
-            total_row[column] = "TOTAL"
-            label_written = True
-        else:
-            total_row[column] = ""
-
-    return pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+    return _append_total_row_shared(dataframe)
 
 
 def auto_fit_columns(worksheet, dataframe: pd.DataFrame) -> None:
-    for column_index, column_name in enumerate(dataframe.columns):
-        column_values = dataframe[column_name].astype(str).fillna("")
-        max_value_length = column_values.map(len).max() if not column_values.empty else 0
-        width = min(max(len(column_name), max_value_length) + 2, 40)
-        worksheet.set_column(column_index, column_index, width)
+    _auto_fit_columns_shared(worksheet, dataframe, max_width=40)
 
 
 def write_report_to_excel(
@@ -327,7 +318,7 @@ def main() -> None:
     if not DB_PATH.exists():
         raise FileNotFoundError(f"Banco de dados nao encontrado em: {DB_PATH}")
 
-    with sqlite3.connect(DB_PATH) as connection:
+    with _connect_db(DB_PATH, read_only=True) as connection:
         reports = load_reports(connection, start_date, end_date)
 
     reports = sort_report_frames(reports)

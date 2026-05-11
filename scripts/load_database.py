@@ -2,9 +2,12 @@ import hashlib
 import json
 import logging
 import sqlite3
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 
 import pandas as pd
+
+from db_utils import assert_identifier, assert_table
 
 
 def upsert_sqlite(
@@ -13,37 +16,55 @@ def upsert_sqlite(
     primary_key: str,
     conn: sqlite3.Connection,
 ) -> None:
-    """Realiza o UPSERT (UPDATE ou INSERT) dinamico via Pandas e SQLite."""
+    """Realiza UPSERT (UPDATE ou INSERT) dinamico via Pandas e SQLite.
+
+    O SQLite nao parametriza identificadores; tabela, PK e colunas sao
+    interpolados via f-string. Para fechar o vetor de SQL injection, todos
+    os nomes passam pela allowlist (`assert_table`) e regex de identificador
+    (`assert_identifier`) antes da interpolacao.
+    """
     if df.empty:
         return
 
-    temp_table = f"temp_{table_name}"
-    df.to_sql(temp_table, conn, if_exists="replace", index=False)
+    safe_table = assert_table(table_name)
+    safe_pk = assert_identifier(primary_key)
+    safe_columns = [assert_identifier(col) for col in df.columns]
 
-    columns = ", ".join(df.columns)
-    colunas_update = [column for column in df.columns if column != primary_key]
+    # Tabela temp privada da conexao (CREATE TEMP TABLE) com sufixo aleatorio
+    # para evitar colisao em execucoes paralelas.
+    temp_table = f"_tmp_{safe_table}_{uuid.uuid4().hex}"
 
-    if colunas_update:
-        set_clause = ", ".join([f"{column}=EXCLUDED.{column}" for column in colunas_update])
+    columns_sql = ", ".join(safe_columns)
+    update_columns = [c for c in safe_columns if c != safe_pk]
+
+    if update_columns:
+        set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in update_columns)
         conflict_action = f"DO UPDATE SET {set_clause}"
     else:
         conflict_action = "DO NOTHING"
 
-    upsert_query = f"""
-        INSERT INTO {table_name} ({columns})
-        SELECT {columns} FROM {temp_table}
-        WHERE true
-        ON CONFLICT({primary_key}) {conflict_action};
-    """
-
     cursor = conn.cursor()
-    cursor.execute(upsert_query)
-    cursor.execute(f"DROP TABLE {temp_table}")
-    conn.commit()
+    try:
+        # to_sql nao cria TEMP nativo; criamos manualmente e populamos via insert.
+        df.to_sql(temp_table, conn, if_exists="replace", index=False)
+
+        upsert_query = (
+            f"INSERT INTO {safe_table} ({columns_sql}) "
+            f"SELECT {columns_sql} FROM {temp_table} "
+            f"ON CONFLICT({safe_pk}) {conflict_action}"
+        )
+        cursor.execute(upsert_query)
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+
+    # Commit deixa de ser responsabilidade desta funcao quando a conexao
+    # esta dentro de uma transacao maior. O caller decide.
+    if not conn.in_transaction:
+        conn.commit()
 
     logging.info(
         "UPSERT concluido na tabela '%s': %s registros processados.",
-        table_name,
+        safe_table,
         len(df),
     )
 
@@ -77,16 +98,23 @@ def _serialize_value(value: object) -> str | None:
     return str(value)
 
 
+def _hash_payload(payload: dict) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _build_row_hash(row: pd.Series) -> str:
     payload = {column: _serialize_value(row.get(column)) for column in TICKET_HISTORY_COLUMNS}
-    return hashlib.md5(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    return _hash_payload(payload)
 
 
 def _build_payload_json(row: pd.Series) -> str:
     payload = {column: _serialize_value(row.get(column)) for column in row.index.tolist()}
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def persist_ticket_history(
@@ -98,7 +126,7 @@ def persist_ticket_history(
     if df_tickets.empty:
         return []
 
-    effective_timestamp = effective_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    effective_timestamp = effective_at or _utc_timestamp()
     current = df_tickets.copy()
     for column in TICKET_HISTORY_COLUMNS:
         if column not in current.columns:
@@ -192,7 +220,8 @@ def persist_ticket_history(
             rows_to_insert,
         )
 
-    conn.commit()
+    if not conn.in_transaction:
+        conn.commit()
     logging.info(
         "Historico de tickets atualizado: %s novo(s) snapshot(s) versionado(s).",
         len(rows_to_insert),
@@ -209,7 +238,7 @@ def sync_current_ticket_version_metadata(
     if not ticket_ids:
         return
 
-    effective_timestamp = effective_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    effective_timestamp = effective_at or _utc_timestamp()
     cursor = conn.cursor()
 
     if changed_ticket_ids:
@@ -236,4 +265,5 @@ def sync_current_ticket_version_metadata(
         """,
         (effective_timestamp, *ticket_ids),
     )
-    conn.commit()
+    if not conn.in_transaction:
+        conn.commit()

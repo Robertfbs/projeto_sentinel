@@ -25,11 +25,16 @@ def normalize_text(value: object) -> str | None:
     return text or None
 
 
+_TRAILING_DOT_ZERO = re.compile(r"\.0+$")
+
+
 def normalize_identifier(value: object) -> str | None:
     normalized = normalize_text(value)
     if normalized is None:
         return None
-    return normalized.replace(".0", "")
+    # Remove apenas o sufixo `.0` que o pandas adiciona ao ler inteiros como
+    # float em planilhas Excel; preserva pontos no meio (ex: `40.01`).
+    return _TRAILING_DOT_ZERO.sub("", normalized)
 
 
 def derive_bloco(matricula: object) -> str | None:

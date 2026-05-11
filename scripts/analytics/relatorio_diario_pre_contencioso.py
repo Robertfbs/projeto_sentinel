@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from ._db import connect as _connect_db
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = PROJECT_ROOT / "03_database" / "pre_contencioso.db"
@@ -445,40 +447,21 @@ def build_report_frames(
     return {sheet_name: normalize_report_dataframe(report_df) for sheet_name, report_df in reports.items()}
 
 
+from .excel_utils import append_total_row as _append_total_row_shared
+from .excel_utils import auto_fit_columns as _auto_fit_columns_shared
+
+
 def append_total_row(dataframe: pd.DataFrame) -> pd.DataFrame:
-    if dataframe.empty:
-        return dataframe
-
-    numeric_columns = dataframe.select_dtypes(include=["number"]).columns.tolist()
-    if len(dataframe) <= 1 or not numeric_columns:
-        return dataframe
-
-    total_row: dict[str, object] = {}
-    label_written = False
-    for column in dataframe.columns:
-        if column in numeric_columns:
-            total_row[column] = dataframe[column].sum()
-        elif not label_written:
-            total_row[column] = "TOTAL"
-            label_written = True
-        else:
-            total_row[column] = ""
-
-    return pd.concat([dataframe, pd.DataFrame([total_row])], ignore_index=True)
+    return _append_total_row_shared(dataframe)
 
 
 def auto_fit_columns(worksheet, dataframe: pd.DataFrame, date_format=None) -> None:
-    for column_index, column_name in enumerate(dataframe.columns):
-        selected = dataframe.loc[:, column_name]
-        if isinstance(selected, pd.DataFrame):
-            flattened_values = selected.fillna("").astype(str).to_numpy().ravel().tolist()
-        else:
-            flattened_values = selected.fillna("").astype(str).tolist()
-
-        max_value_length = max((len(str(value)) for value in flattened_values), default=0)
-        width = min(max(len(str(column_name)), int(max_value_length)) + 2, 42)
-        column_format = date_format if column_name in DATE_COLUMNS else None
-        worksheet.set_column(column_index, column_index, width, column_format)
+    _auto_fit_columns_shared(
+        worksheet,
+        dataframe,
+        date_columns=DATE_COLUMNS,
+        date_format=date_format,
+    )
 
 
 def write_report_excel(reports: dict[str, pd.DataFrame]) -> Path:
@@ -577,7 +560,7 @@ def generate_daily_pre_contencioso_report(
     if not database_path.exists():
         raise FileNotFoundError(f"Banco de dados nao encontrado em: {database_path}")
 
-    with sqlite3.connect(database_path) as connection:
+    with _connect_db(database_path, read_only=True) as connection:
         data_df, exception_df, today, business_day, week_end, _exception_start, _exception_end = load_daily_data(
             connection, reference_date
         )

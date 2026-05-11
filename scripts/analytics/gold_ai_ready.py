@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from ._db import connect as _connect_db
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = BASE_DIR / "03_database" / "pre_contencioso.db"
@@ -74,7 +76,7 @@ def generate_gold_ai_ready(
     active_output_dir = output_dir or DEFAULT_OUTPUT_DIR
     active_output_dir.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(active_db_path) as conn:
+    with _connect_db(active_db_path, read_only=True) as conn:
         df_ai_ready = pd.read_sql_query(GOLD_AI_READY_QUERY, conn)
 
     df_ai_ready = _normalize_ai_text_columns(df_ai_ready)
