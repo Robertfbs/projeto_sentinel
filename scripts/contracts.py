@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from gss_matching import GSS_COLUMN_RENAME_CANDIDATES
 from schema_validation import SchemaValidationIssue, find_missing_columns, has_any_non_empty_value
 
 
@@ -19,6 +20,17 @@ class SourceContract:
     source_name: str
     required_columns: list[str]
     critical_presence_groups: list[list[str]]
+    column_aliases: dict[str, list[str]] | None = None
+
+
+def _build_column_aliases(rename_candidates: dict[str, str]) -> dict[str, list[str]]:
+    aliases: dict[str, list[str]] = {}
+    for alias_name, canonical_name in rename_candidates.items():
+        aliases.setdefault(canonical_name, []).append(alias_name)
+    return aliases
+
+
+GSS_CONTRACT_COLUMN_ALIASES = _build_column_aliases(GSS_COLUMN_RENAME_CANDIDATES)
 
 
 SOURCE_CONTRACTS: dict[str, SourceContract] = {
@@ -72,6 +84,7 @@ SOURCE_CONTRACTS: dict[str, SourceContract] = {
             ["data_emissao", "data_execucao"],
             ["servico_executado"],
         ],
+        column_aliases=GSS_CONTRACT_COLUMN_ALIASES,
     ),
 }
 
@@ -83,7 +96,11 @@ class DataContractValidator:
             return []
 
         issues: list[SchemaValidationIssue] = []
-        missing_columns = find_missing_columns(df, contract.required_columns)
+        missing_columns = find_missing_columns(
+            df,
+            contract.required_columns,
+            contract.column_aliases,
+        )
         if missing_columns:
             issues.append(
                 SchemaValidationIssue(
@@ -96,7 +113,7 @@ class DataContractValidator:
             )
 
         for group in contract.critical_presence_groups:
-            if not has_any_non_empty_value(df, group):
+            if not has_any_non_empty_value(df, group, contract.column_aliases):
                 issues.append(
                     SchemaValidationIssue(
                         source_name=source_name,

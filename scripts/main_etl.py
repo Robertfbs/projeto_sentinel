@@ -25,7 +25,7 @@ from business_rules import (
 )
 from contracts import ContractValidationError, DataContractValidator
 from create_database import setup_database
-from db_utils import assert_table, connect as connect_db
+from db_utils import assert_table
 from gss_matching import (
     enrich_tickets_from_gss,
     filter_raw_gss_for_ticket_enrichment,
@@ -1033,10 +1033,12 @@ def process_and_load() -> None:
                 tempo_etapa=gss_timer.elapsed(),
             )
 
-            # Uma unica conexao mantida ate o fim da fase de persistencia para
-            # eliminar a janela entre a leitura de ticket_vinculos_manuais e a
-            # gravacao Gold (corrige race condition entre execucoes paralelas).
-            persistence_conn: sqlite3.Connection | None = connect_db(DB_PATH)
+            # Reaproveita a mesma conexao do repositório de observabilidade
+            # durante a janela transacional crítica. Isso preserva a garantia
+            # de consistência entre a leitura dos vínculos manuais e a escrita
+            # Gold, sem abrir uma segunda conexão escritora concorrente ao
+            # `etl_logs`, que causaria `database is locked`.
+            persistence_conn: sqlite3.Connection | None = repo.connect()
             persistence_conn.execute("BEGIN IMMEDIATE")
             manual_links_df = load_manual_links(persistence_conn)
 
@@ -1222,6 +1224,7 @@ def process_and_load() -> None:
                     )
                     upsert_sqlite(df_notificacao_db, "tickets_notificacao", "ticket_id", conn)
 
+                df_ticket_assunto_db = pd.DataFrame()
                 if not df_ticket_assunto.empty:
                     cols_ticket_assunto = [
                         "ticket_assunto_id",
@@ -1237,8 +1240,8 @@ def process_and_load() -> None:
                         subset=["ticket_assunto_id"],
                         keep="last",
                     )
-                    upsert_sqlite(df_ticket_assunto_db, "ticket_assunto", "ticket_assunto_id", conn)
 
+                df_audiencias_db = pd.DataFrame()
                 if not df_audiencias.empty:
                     cols_aud = [
                         "ticket_id",
@@ -1259,7 +1262,6 @@ def process_and_load() -> None:
                         df_audiencias[cols_aud].drop_duplicates(subset=["ticket_id"], keep="last"),
                         ["data_audiencia", "data_reagendamento"],
                     )
-                    upsert_sqlite(df_audiencias_db, "audiencias", "ticket_id", conn)
 
                 if not df_solicitacao.empty:
                     relacionamento_cols = [
@@ -1416,6 +1418,21 @@ def process_and_load() -> None:
                         ],
                     )
                     upsert_sqlite(df_tickets_db, "tickets", "ticket_id", conn)
+
+                    if not df_ticket_assunto_db.empty:
+                        upsert_sqlite(df_ticket_assunto_db, "ticket_assunto", "ticket_assunto_id", conn)
+
+                    if not df_audiencias_db.empty:
+                        valid_ticket_ids = set(df_tickets_db["ticket_id"].dropna().astype(int).tolist())
+                        audiencia_ticket_ids = pd.to_numeric(df_audiencias_db["ticket_id"], errors="coerce")
+                        orphan_audiencias_mask = ~audiencia_ticket_ids.isin(valid_ticket_ids)
+                        if orphan_audiencias_mask.any():
+                            logging.info(
+                                "Descartadas %s audiencia(s) sem ticket pai valido para persistencia Gold.",
+                                int(orphan_audiencias_mask.sum()),
+                            )
+                            df_audiencias_db = df_audiencias_db.loc[~orphan_audiencias_mask].copy()
+                        upsert_sqlite(df_audiencias_db, "audiencias", "ticket_id", conn)
 
                     effective_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     changed_ticket_ids = persist_ticket_history(df_tickets_db, conn, run_id, effective_at)

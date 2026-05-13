@@ -73,6 +73,33 @@ GSS_ENRICHMENT_COLUMN_MAP = {
     "nome_requerente": "nome_requerente_gss",
 }
 
+GSS_COLUMN_RENAME_CANDIDATES = {
+    "no_da_o_s": "numero_os",
+    "ano_da_o_s": "ano_os",
+    "matricula": "matricula",
+    "dt_emissao": "data_emissao",
+    "servico_executado": "servico_executado",
+    "nome_cliente": "nome_cliente",
+    "nome_requerente": "nome_requerente",
+    "telefone": "telefone",
+    "endereco_do_requerente": "endereco_requerente",
+    "nome_logradouro": "nome_logradouro",
+    "numero_da_porta": "numero_porta",
+    "desc_complemento": "complemento",
+    "nome_do_bairro": "bairro",
+    "nome_da_localidade": "municipio",
+    "dt_agendamento": "data_agendamento",
+    "dt_impressao": "data_impressao",
+    "prev_conclusao": "previsao_conclusao",
+    "dt_execucao": "data_execucao",
+    "executor": "executor",
+    "entrada_no_setor": "entrada_setor",
+    "data_pedido": "data_pedido",
+    "atendente": "atendente",
+    "solicitacao_associada": "solicitacao_associada",
+    "tipo_de_solicitacao": "tipo_solicitacao_gss",
+}
+
 
 def _ensure_columns_with_defaults(
     df: pd.DataFrame,
@@ -221,37 +248,10 @@ def transform_gss_data(df: pd.DataFrame) -> pd.DataFrame:
     frame = df.copy()
     frame.columns = [str(column).strip() for column in frame.columns]
 
-    rename_candidates = {
-        "no_da_o_s": "numero_os",
-        "ano_da_o_s": "ano_os",
-        "matricula": "matricula",
-        "dt_emissao": "data_emissao",
-        "servico_executado": "servico_executado",
-        "nome_cliente": "nome_cliente",
-        "nome_requerente": "nome_requerente",
-        "telefone": "telefone",
-        "endereco_do_requerente": "endereco_requerente",
-        "nome_logradouro": "nome_logradouro",
-        "numero_da_porta": "numero_porta",
-        "desc_complemento": "complemento",
-        "nome_do_bairro": "bairro",
-        "nome_da_localidade": "municipio",
-        "dt_agendamento": "data_agendamento",
-        "dt_impressao": "data_impressao",
-        "prev_conclusao": "previsao_conclusao",
-        "dt_execucao": "data_execucao",
-        "executor": "executor",
-        "entrada_no_setor": "entrada_setor",
-        "data_pedido": "data_pedido",
-        "atendente": "atendente",
-        "solicitacao_associada": "solicitacao_associada",
-        "tipo_de_solicitacao": "tipo_solicitacao_gss",
-    }
-
     rename_map = {
-        column: rename_candidates[normalize_column_name(column)]
+        column: GSS_COLUMN_RENAME_CANDIDATES[normalize_column_name(column)]
         for column in frame.columns
-        if normalize_column_name(column) in rename_candidates
+        if normalize_column_name(column) in GSS_COLUMN_RENAME_CANDIDATES
     }
     frame = frame.rename(columns=rename_map)
     frame = ensure_columns(frame, GSS_REQUIRED_COLUMNS)

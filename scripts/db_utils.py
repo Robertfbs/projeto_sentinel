@@ -22,16 +22,16 @@ ALLOWED_TABLES: frozenset[str] = frozenset(
         "tickets",
         "tickets_notificacao",
         "tickets_n1",
-        "tickets_assuntos_subsequentes",
+        "ticket_assunto",
+        "ticket_relacionamentos",
+        "ticket_vinculos_manuais",
         "tickets_historico",
-        "tickets_vinculos_manuais",
         "tickets_auditoria_classificacao",
         "tickets_auditoria_operacional",
         "audiencias",
         "gss_ordens_servico",
         "etl_runs",
-        "etl_run_logs",
-        "etl_run_metrics",
+        "etl_logs",
     }
 )
 

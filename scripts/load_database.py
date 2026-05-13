@@ -50,7 +50,11 @@ def upsert_sqlite(
 
         upsert_query = (
             f"INSERT INTO {safe_table} ({columns_sql}) "
-            f"SELECT {columns_sql} FROM {temp_table} "
+            # `WHERE 1=1` evita a ambiguidade sintática do parser do SQLite
+            # em `INSERT ... SELECT ... ON CONFLICT ...`, especialmente quando
+            # a origem do SELECT é uma tabela (inclusive TEMP). Não altera a
+            # semântica da carga; apenas torna o UPSERT compatível e estável.
+            f"SELECT {columns_sql} FROM {temp_table} WHERE 1=1 "
             f"ON CONFLICT({safe_pk}) {conflict_action}"
         )
         cursor.execute(upsert_query)

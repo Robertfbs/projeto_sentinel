@@ -38,5 +38,19 @@ class ContractValidationTests(unittest.TestCase):
             self.validator.validate_or_raise("zendesk_geral", df)
 
 
+    def test_gss_contract_accepts_supported_raw_alias_columns(self) -> None:
+        df = pd.DataFrame(
+            {
+                "Matricula": ["4001001"],
+                "No. da O.S.": ["12345"],
+                "Dt. Emissao": ["2026-05-10"],
+                "Servico Executado": ["RELIGACAO"],
+            }
+        )
+
+        issues = self.validator.validate_source("gss", df)
+        self.assertEqual(issues, [])
+
+
 if __name__ == "__main__":
     unittest.main()
