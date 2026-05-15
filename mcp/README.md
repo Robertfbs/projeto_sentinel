@@ -1,14 +1,14 @@
 # MCP do Projeto Sentinel
 
-Esta pasta passa a conter a base canônica de contexto para automação assistida do Sentinel.
+Esta pasta contém a base canônica de contexto para automação assistida do Sentinel.
 
 Diretrizes:
 - o MCP do Sentinel é uma camada de contexto e orquestração, não substitui o ETL atual;
 - a fonte oficial continua sendo `03_database/pre_contencioso.db`;
 - o stack oficial continua sendo Python + SQLite + Excel + Power BI;
-- os arquivos JavaScript já existentes nesta pasta são tratados como protótipos auxiliares e não como implementação oficial do Sentinel.
+- protótipos Node/PostgreSQL/random não fazem parte da implementação oficial.
 
-Arquivos principais adicionados:
+Arquivos principais:
 - `sentinel-mcp-architecture.md`
 - `sentinel-context-registry.md`
 - `sentinel-tool-catalog.md`

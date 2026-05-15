@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import unittest
 
 import pandas as pd
@@ -9,6 +10,7 @@ from business_rules import (
     apply_ticket_manual_overrides,
     build_archive_flag,
     filter_removed_tickets,
+    purge_stale_audit_records,
 )
 
 
@@ -118,6 +120,50 @@ class BusinessRulesTests(unittest.TestCase):
         result = filter_removed_tickets(df, context="unit_test")
 
         self.assertEqual(result["ticket_id"].tolist(), [99999999])
+
+    def test_stale_pending_audit_records_are_purged_against_current_ticket_flag(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE tickets (
+                    ticket_id INTEGER PRIMARY KEY,
+                    flag_auditoria_classificacao INTEGER
+                );
+                CREATE TABLE tickets_auditoria_classificacao (
+                    ticket_id INTEGER PRIMARY KEY,
+                    status_auditoria TEXT
+                );
+                CREATE TABLE tickets_auditoria_operacional (
+                    auditoria_operacional_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id INTEGER,
+                    status_validacao TEXT
+                );
+                INSERT INTO tickets VALUES (16153239, 0);
+                INSERT INTO tickets VALUES (33190240, 1);
+                INSERT INTO tickets_auditoria_classificacao VALUES (16153239, 'PENDENTE_VALIDACAO');
+                INSERT INTO tickets_auditoria_classificacao VALUES (33190240, 'PENDENTE_VALIDACAO');
+                INSERT INTO tickets_auditoria_classificacao VALUES (99999999, 'VALIDADO');
+                INSERT INTO tickets_auditoria_operacional (ticket_id, status_validacao)
+                    VALUES (16153239, 'PENDENTE_VALIDACAO');
+                INSERT INTO tickets_auditoria_operacional (ticket_id, status_validacao)
+                    VALUES (33190240, 'PENDENTE_VALIDACAO');
+                """
+            )
+
+            purge_stale_audit_records(conn)
+
+            classification_rows = conn.execute(
+                "SELECT ticket_id, status_auditoria FROM tickets_auditoria_classificacao ORDER BY ticket_id"
+            ).fetchall()
+            operational_rows = conn.execute(
+                "SELECT ticket_id, status_validacao FROM tickets_auditoria_operacional ORDER BY ticket_id"
+            ).fetchall()
+
+            self.assertEqual(classification_rows, [(33190240, "PENDENTE_VALIDACAO"), (99999999, "VALIDADO")])
+            self.assertEqual(operational_rows, [(33190240, "PENDENTE_VALIDACAO")])
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

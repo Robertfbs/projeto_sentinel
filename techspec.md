@@ -37,7 +37,6 @@ Componentes aditivos recomendados:
 Componentes presentes no repositório, mas não autoritativos para o Sentinel:
 - `AGENTS.md` da raiz, hoje orientado a outro stack;
 - `frontend/`, `backend/`, `e2e/`, `package.json` e artefatos Bun/Vite;
-- `mcp/sql.js`, `mcp/temp.js` e `mcp/random-number.js`, que hoje são protótipos Node/PostgreSQL/random e não representam a arquitetura-alvo do Sentinel.
 
 Relacionamentos principais:
 - `main_etl.py` orquestra ingestão, transformação, enriquecimento, persistência e geração de saídas.

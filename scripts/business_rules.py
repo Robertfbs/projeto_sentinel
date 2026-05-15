@@ -215,6 +215,54 @@ def purge_removed_tickets(conn: sqlite3.Connection) -> None:
     )
 
 
+def purge_stale_audit_records(conn: sqlite3.Connection) -> None:
+    """Remove pendencias de auditoria que nao existem mais no estado atual da Gold.
+
+    As tabelas de auditoria sao alimentadas por UPSERT. Quando um ticket deixa de
+    exigir auditoria em uma carga posterior, ele nao volta a aparecer no dataframe
+    de auditoria e, sem esta reconciliacao, o registro antigo permaneceria como
+    PENDENTE_VALIDACAO.
+    """
+
+    cursor = conn.cursor()
+    statements = [
+        """
+        DELETE FROM tickets_auditoria_classificacao
+        WHERE UPPER(TRIM(COALESCE(status_auditoria, ''))) = 'PENDENTE_VALIDACAO'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM tickets AS t
+              WHERE t.ticket_id = tickets_auditoria_classificacao.ticket_id
+                AND COALESCE(t.flag_auditoria_classificacao, 0) = 1
+          )
+        """,
+        """
+        DELETE FROM tickets_auditoria_operacional
+        WHERE UPPER(TRIM(COALESCE(status_validacao, ''))) = 'PENDENTE_VALIDACAO'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM tickets AS t
+              WHERE t.ticket_id = tickets_auditoria_operacional.ticket_id
+                AND COALESCE(t.flag_auditoria_classificacao, 0) = 1
+          )
+        """,
+    ]
+
+    total_deleted = 0
+    for sql in statements:
+        cursor.execute(sql)
+        total_deleted += cursor.rowcount if cursor.rowcount > 0 else 0
+
+    if not conn.in_transaction:
+        conn.commit()
+
+    if total_deleted:
+        logging.info(
+            "Reconciliacao de auditoria removeu %s pendencia(s) obsoleta(s).",
+            total_deleted,
+        )
+
+
 def apply_ticket_manual_overrides(df: pd.DataFrame, ticket_kind: str) -> pd.DataFrame:
     if df.empty:
         return df

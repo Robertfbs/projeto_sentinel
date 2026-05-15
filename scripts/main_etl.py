@@ -22,6 +22,7 @@ from business_rules import (
     build_operational_audit_records,
     filter_removed_tickets as br_filter_removed_tickets,
     purge_removed_tickets as br_purge_removed_tickets,
+    purge_stale_audit_records as br_purge_stale_audit_records,
 )
 from contracts import ContractValidationError, DataContractValidator
 from create_database import setup_database
@@ -1468,6 +1469,8 @@ def process_and_load() -> None:
                             "auditoria_operacional_key",
                             conn,
                         )
+
+                    br_purge_stale_audit_records(conn)
 
                     if not df_relacionamentos_db.empty:
                         upsert_sqlite(df_relacionamentos_db, "ticket_relacionamentos", "ticket_solicitacao_id", conn)

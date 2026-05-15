@@ -1,0 +1,27 @@
+[project]
+name = "Projeto Sentinel"
+gold_database = "03_database/pre_contencioso.db"
+
+[security]
+read_only = true
+allow_sql_text = false
+max_list_limit = 200
+require_confirmation = [
+  "reports.generate_weekly_productivity",
+  "reports.generate_executive",
+  "powerbi.export_semantic_model"
+]
+pii_columns = [
+  "cpf_cliente",
+  "telefone",
+  "email_solicitante",
+  "nome_solicitante",
+  "nome_cliente_gss",
+  "nome_requerente_gss"
+]
+
+[logging]
+audit_log = "mcp_server/logs/mcp_audit.jsonl"
+
+[integrations]
+mode = "draft_only"

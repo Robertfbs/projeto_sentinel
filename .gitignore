@@ -12,6 +12,23 @@
 /03_database/
 /04_database/
 /outputs/
+/backup_relatorios_anteriores/
+/backup_database/
+/backup_db/
+/backups/
+
+# Arquivos com dados sensiveis ou bases operacionais.
+*.db
+*.sqlite
+*.sqlite3
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+*.parquet
+*.feather
+*.pkl
+*.pickle
 
 # ---------------------------------------------------------
 # Python
@@ -24,6 +41,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.venv-mcp/
+.python_packages/
 venv/
 env/
 
@@ -57,6 +76,8 @@ env/
 # ---------------------------------------------------------
 /logs/
 *.log
+mcp_server/logs/*.jsonl
+!mcp_server/logs/.gitkeep
 
 # ---------------------------------------------------------
 # Tooling auxiliar ja presente no repositorio
