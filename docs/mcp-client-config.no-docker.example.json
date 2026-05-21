@@ -1,0 +1,48 @@
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "github_mcp_authorization_header",
+      "description": "Header completo: Bearer <GitHub fine-grained PAT read-only>",
+      "password": true
+    }
+  ],
+  "mcpServers": {
+    "sentinel": {
+      "command": "<PROJECT_ROOT>\\.venv-mcp\\Scripts\\python.exe",
+      "args": [
+        "<PROJECT_ROOT>\\mcp_server\\server.py"
+      ],
+      "env": {
+        "SENTINEL_MCP_CONFIG": "<PROJECT_ROOT>\\mcp_server\\config\\sentinel_mcp.toml"
+      }
+    },
+    "github-readonly-remote": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "${input:github_mcp_authorization_header}",
+        "X-MCP-Toolsets": "repos,issues,pull_requests,actions,users",
+        "X-MCP-Readonly": "true"
+      }
+    },
+    "github-readonly-local-binary": {
+      "command": "<PROJECT_ROOT>\\tools\\mcp\\github-mcp-server.exe",
+      "args": [
+        "stdio",
+        "--read-only",
+        "--toolsets",
+        "default,actions"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      }
+    }
+  },
+  "servers": {
+    "powerbi-remote": {
+      "type": "http",
+      "url": "https://api.fabric.microsoft.com/v1/mcp/powerbi"
+    }
+  }
+}

@@ -45,6 +45,7 @@ __pycache__/
 .python_packages/
 venv/
 env/
+/tools/mcp/
 
 # ---------------------------------------------------------
 # SQLite / arquivos transientes de banco
@@ -70,6 +71,13 @@ env/
 .env.production
 .env.test
 *.local
+mcp.local.json
+mcp_client.local.json
+mcp_servers.local.json
+.mcp.local.json
+.mcp*.local.json
+.vscode/mcp.local.json
+.vscode/mcp.*.local.json
 
 # ---------------------------------------------------------
 # Logs
